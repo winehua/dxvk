@@ -24,9 +24,15 @@
 #include "d3d11_texture.h"
 #include "d3d11_video.h"
 
+#include "../util/util_env.h"
 #include "../util/util_shared_res.h"
 
 namespace dxvk {
+
+  static bool winehuaRelaxedDriverFeatures() {
+    static const bool enabled = env::getEnvVar("WINEHUA_DXVK_RELAXED_FEATURES") == "1";
+    return enabled;
+  }
   
   constexpr uint32_t D3D11DXGIDevice::DefaultFrameLatency;
 
@@ -1916,8 +1922,37 @@ namespace dxvk {
     const DxvkDeviceFeatures features
       = GetDeviceFeatures(adapter, featureLevel);
     
-    if (!adapter->checkFeatureSupport(features))
+    if (!adapter->checkFeatureSupport(features)) {
+      if (winehuaRelaxedDriverFeatures()) {
+        const DxvkDeviceFeatures supported = adapter->features();
+#define WINEHUA_LOG_MISSING(section, feature) \
+        if (features.section.feature && !supported.section.feature) \
+          Logger::warn("WineHua: missing Vulkan feature " #feature)
+        WINEHUA_LOG_MISSING(core.features, robustBufferAccess);
+        WINEHUA_LOG_MISSING(core.features, fullDrawIndexUint32);
+        WINEHUA_LOG_MISSING(core.features, imageCubeArray);
+        WINEHUA_LOG_MISSING(core.features, independentBlend);
+        WINEHUA_LOG_MISSING(core.features, geometryShader);
+        WINEHUA_LOG_MISSING(core.features, tessellationShader);
+        WINEHUA_LOG_MISSING(core.features, sampleRateShading);
+        WINEHUA_LOG_MISSING(core.features, dualSrcBlend);
+        WINEHUA_LOG_MISSING(core.features, multiDrawIndirect);
+        WINEHUA_LOG_MISSING(core.features, drawIndirectFirstInstance);
+        WINEHUA_LOG_MISSING(core.features, depthClamp);
+        WINEHUA_LOG_MISSING(core.features, depthBiasClamp);
+        WINEHUA_LOG_MISSING(core.features, fillModeNonSolid);
+        WINEHUA_LOG_MISSING(core.features, multiViewport);
+        WINEHUA_LOG_MISSING(core.features, fragmentStoresAndAtomics);
+        WINEHUA_LOG_MISSING(core.features, shaderImageGatherExtended);
+        WINEHUA_LOG_MISSING(core.features, shaderStorageImageWriteWithoutFormat);
+        WINEHUA_LOG_MISSING(core.features, shaderClipDistance);
+        WINEHUA_LOG_MISSING(core.features, shaderCullDistance);
+        WINEHUA_LOG_MISSING(extHostQueryReset, hostQueryReset);
+        WINEHUA_LOG_MISSING(shaderDrawParameters, shaderDrawParameters);
+#undef WINEHUA_LOG_MISSING
+      }
       return false;
+    }
     
     // TODO also check for required limits
     return true;
@@ -1929,6 +1964,7 @@ namespace dxvk {
           D3D_FEATURE_LEVEL featureLevel) {
     DxvkDeviceFeatures supported = adapter->features();
     DxvkDeviceFeatures enabled   = {};
+    const bool relaxedDriverFeatures = winehuaRelaxedDriverFeatures();
 
     enabled.core.features.geometryShader                          = VK_TRUE;
     enabled.core.features.robustBufferAccess                      = VK_TRUE;
@@ -1964,7 +2000,14 @@ namespace dxvk {
       enabled.core.features.samplerAnisotropy                     = supported.core.features.samplerAnisotropy;
       enabled.core.features.shaderClipDistance                    = VK_TRUE;
       enabled.core.features.shaderCullDistance                    = VK_TRUE;
-      enabled.core.features.textureCompressionBC                  = VK_TRUE;
+      // Harmony's Maleoon Vulkan driver does not expose BC formats.  Keep
+      // this feature disabled in WineHua's opt-in compatibility mode so
+      // applications which only use uncompressed textures can still create
+      // a D3D11 device.  BC resources remain unsupported and must not be
+      // silently treated as working until a format-emulation path exists.
+      enabled.core.features.textureCompressionBC                  = relaxedDriverFeatures
+                                                                  ? supported.core.features.textureCompressionBC
+                                                                  : VK_TRUE;
       enabled.extDepthClipEnable.depthClipEnable                  = supported.extDepthClipEnable.depthClipEnable;
       enabled.extHostQueryReset.hostQueryReset                    = VK_TRUE;
     }
@@ -1983,8 +2026,16 @@ namespace dxvk {
       enabled.core.features.logicOp                               = supported.core.features.logicOp;
       enabled.core.features.shaderImageGatherExtended             = VK_TRUE;
       enabled.core.features.variableMultisampleRate               = supported.core.features.variableMultisampleRate;
-      enabled.extTransformFeedback.transformFeedback              = VK_TRUE;
-      enabled.extTransformFeedback.geometryStreams                = VK_TRUE;
+      // VK_EXT_transform_feedback is also absent on the current Venus
+      // device.  Most games do not use D3D stream-output, so allow the
+      // extension to remain disabled in the same explicit compatibility
+      // mode.  Stream-output calls will still be unsupported.
+      enabled.extTransformFeedback.transformFeedback              = relaxedDriverFeatures
+                                                                  ? supported.extTransformFeedback.transformFeedback
+                                                                  : VK_TRUE;
+      enabled.extTransformFeedback.geometryStreams                = relaxedDriverFeatures
+                                                                  ? supported.extTransformFeedback.geometryStreams
+                                                                  : VK_TRUE;
     }
     
     if (featureLevel >= D3D_FEATURE_LEVEL_10_1) {
