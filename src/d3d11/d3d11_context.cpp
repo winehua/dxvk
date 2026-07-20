@@ -8,6 +8,7 @@
 #include "d3d11_video.h"
 
 #include "../dxbc/dxbc_util.h"
+#include "../dxvk/dxvk_winehua_trace.h"
 
 namespace dxvk {
   
@@ -3670,6 +3671,8 @@ namespace dxvk {
       // write directly to a staging buffer and dispatch a copy
       DxvkBufferSlice stagingSlice = AllocStagingBuffer(Length);
       std::memcpy(stagingSlice.mapPtr(0), pSrcData, Length);
+      if (winehuaFlushDynamicMapped())
+        stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle());
 
       EmitCs([
         cStagingSlice = std::move(stagingSlice),
@@ -3742,6 +3745,8 @@ namespace dxvk {
 
       auto stagingSlice = AllocStagingBuffer(decoded.data.size());
       std::memcpy(stagingSlice.mapPtr(0), decoded.data.data(), decoded.data.size());
+      if (winehuaFlushDynamicMapped())
+        stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle());
       UpdateImage(pDstTexture, &subresource, offset, extent, std::move(stagingSlice));
       return;
     }
@@ -3752,6 +3757,8 @@ namespace dxvk {
       pSrcData, SrcRowPitch, SrcDepthPitch, 0, 0,
       pDstTexture->GetVkImageType(), extent, 1,
       formatInfo, formatInfo->aspectMask);
+    if (winehuaFlushDynamicMapped())
+      stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle());
 
     UpdateImage(pDstTexture, &subresource,
       offset, extent, std::move(stagingSlice));

@@ -193,6 +193,48 @@ namespace dxvk {
   }
 
 
+  VkResult DxvkImage::flushMappedRange(
+          VkDeviceSize offset,
+          VkDeviceSize length) const {
+    return syncMappedRange(offset, length, false);
+  }
+
+
+  VkResult DxvkImage::invalidateMappedRange(
+          VkDeviceSize offset,
+          VkDeviceSize length) const {
+    return syncMappedRange(offset, length, true);
+  }
+
+
+  VkResult DxvkImage::syncMappedRange(
+          VkDeviceSize offset,
+          VkDeviceSize length,
+          bool         invalidate) const {
+    if (!m_image.memory || offset >= m_image.memory.length())
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    length = std::min(length, m_image.memory.length() - offset);
+    if (!length)
+      return VK_SUCCESS;
+
+    const VkDeviceSize atom =
+      m_device->properties().core.properties.limits.nonCoherentAtomSize;
+    const VkDeviceSize rangeBegin = m_image.memory.offset() + offset;
+    const VkDeviceSize rangeEnd = align(rangeBegin + length, atom);
+    VkMappedMemoryRange range;
+    range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.pNext  = nullptr;
+    range.memory = m_image.memory.memory();
+    range.offset = (rangeBegin / atom) * atom;
+    range.size   = rangeEnd - range.offset;
+
+    return invalidate
+      ? m_vkd->vkInvalidateMappedMemoryRanges(m_vkd->device(), 1, &range)
+      : m_vkd->vkFlushMappedMemoryRanges(m_vkd->device(), 1, &range);
+  }
+
+
   bool DxvkImage::canShareImage(const VkImageCreateInfo&  createInfo, const DxvkSharedHandleInfo& sharingInfo) const {
     if (sharingInfo.mode == DxvkSharedHandleMode::None)
       return false;

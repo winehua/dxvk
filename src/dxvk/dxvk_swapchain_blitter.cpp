@@ -1,4 +1,5 @@
 #include "dxvk_swapchain_blitter.h"
+#include "dxvk_winehua_trace.h"
 
 #include <dxvk_present_frag.h>
 #include <dxvk_present_frag_blit.h>
@@ -92,6 +93,8 @@ namespace dxvk {
         m_gammaSlice = m_gammaBuffer->allocSlice();
 
       std::memcpy(m_gammaSlice.mapPtr, cpData, size);
+      if (winehuaFlushDynamicMapped())
+        m_gammaBuffer->flushMappedSlice(m_gammaSlice);
     } else {
       m_gammaBuffer = nullptr;
       m_gammaSlice = DxvkBufferSliceHandle();

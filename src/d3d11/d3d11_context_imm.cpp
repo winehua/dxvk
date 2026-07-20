@@ -295,6 +295,8 @@ namespace dxvk {
 
     if (unlikely(FAILED(hr)))
       *pMappedResource = D3D11_MAPPED_SUBRESOURCE();
+    else if (resourceDim == D3D11_RESOURCE_DIMENSION_BUFFER)
+      static_cast<D3D11Buffer*>(pResource)->SetMapType(MapType);
 
     return hr;
   }
@@ -309,7 +311,10 @@ namespace dxvk {
 
       if (resourceDim == D3D11_RESOURCE_DIMENSION_BUFFER) {
         auto buffer = static_cast<D3D11Buffer*>(pResource);
-        buffer->GetBuffer()->flushMappedSlice(buffer->GetMappedSlice());
+        const D3D11_MAP mapType = buffer->GetMapType();
+        buffer->SetMapType(D3D11_MAP(~0u));
+        if (mapType != D3D11_MAP(~0u) && mapType != D3D11_MAP_READ)
+          buffer->GetBuffer()->flushMappedSlice(buffer->GetMappedSlice());
       }
     }
 
@@ -480,6 +485,10 @@ namespace dxvk {
           return DXGI_ERROR_WAS_STILL_DRAWING;
 
         DxvkBufferSliceHandle physSlice = pResource->GetMappedSlice();
+        if (winehuaPreciseShadowEnabled()
+         && (MapType == D3D11_MAP_READ || MapType == D3D11_MAP_READ_WRITE)
+         && pResource->GetBuffer()->invalidateMappedSlice(physSlice) != VK_SUCCESS)
+          return E_FAIL;
         pMappedResource->pData      = physSlice.mapPtr;
         pMappedResource->RowPitch   = bufferSize;
         pMappedResource->DepthPitch = bufferSize;
@@ -625,6 +634,17 @@ namespace dxvk {
       }
     }
 
+    if (winehuaPreciseShadowEnabled()
+     && (MapType == D3D11_MAP_READ || MapType == D3D11_MAP_READ_WRITE)) {
+      const auto layout = pResource->GetSubresourceLayout(
+        formatInfo->aspectMask, Subresource);
+      const VkResult result = mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_DIRECT
+        ? mappedImage->invalidateMappedRange(layout.Offset, layout.Size)
+        : mappedBuffer->invalidateMappedSlice(pResource->GetMappedSlice(Subresource));
+      if (result != VK_SUCCESS)
+        return E_FAIL;
+    }
+
     // Mark the given subresource as mapped
     pResource->SetMapType(Subresource, MapType);
 
@@ -652,6 +672,17 @@ namespace dxvk {
     // Decrement mapped image counter only after making sure
     // the given subresource is actually mapped right now
     m_mappedImageCount -= 1;
+
+    if (winehuaPreciseShadowEnabled() && mapType != D3D11_MAP_READ) {
+      const auto formatInfo = imageFormatInfo(pResource->GetPackedFormat());
+      const auto layout = pResource->GetSubresourceLayout(
+        formatInfo->aspectMask, Subresource);
+      if (pResource->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_DIRECT)
+        pResource->GetImage()->flushMappedRange(layout.Offset, layout.Size);
+      else
+        pResource->GetMappedBuffer(Subresource)->flushMappedSlice(
+          pResource->GetMappedSlice(Subresource));
+    }
 
     if ((mapType != D3D11_MAP_READ) &&
         (pResource->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_BUFFER)) {

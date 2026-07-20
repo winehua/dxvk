@@ -196,6 +196,14 @@ namespace dxvk {
     void* mapPtr(VkDeviceSize offset) const {
       return m_image.memory.mapPtr(offset);
     }
+
+    VkResult flushMappedRange(
+            VkDeviceSize          offset,
+            VkDeviceSize          length) const;
+
+    VkResult invalidateMappedRange(
+            VkDeviceSize          offset,
+            VkDeviceSize          length) const;
     
     /**
      * \brief Image format info
@@ -333,6 +341,11 @@ namespace dxvk {
     bool m_shared = false;
 
     small_vector<VkFormat, 4> m_viewFormats;
+
+    VkResult syncMappedRange(
+            VkDeviceSize          offset,
+            VkDeviceSize          length,
+            bool                  invalidate) const;
     
     bool canShareImage(const VkImageCreateInfo&  createInfo, const DxvkSharedHandleInfo& sharingInfo) const;
 

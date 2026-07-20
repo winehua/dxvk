@@ -1,4 +1,5 @@
 #include "dxvk_hud_renderer.h"
+#include "../dxvk_winehua_trace.h"
 
 #include <hud_graph_frag.h>
 #include <hud_graph_vert.h>
@@ -59,6 +60,8 @@ namespace dxvk::hud {
 
     VkDeviceSize offset = allocDataBuffer(textCopy.size());
     std::memcpy(m_dataBuffer->mapPtr(offset), textCopy.data(), textCopy.size());
+    if (winehuaFlushDynamicMapped())
+      m_dataBuffer->flushMappedSlice(m_dataBuffer->getSliceHandle(offset, textCopy.size()));
 
     // Fill in push constants for the next draw
     HudTextPushConstants pushData;
@@ -86,6 +89,8 @@ namespace dxvk::hud {
     VkDeviceSize dataSize = pointCount * sizeof(*pointData);
     VkDeviceSize offset = allocDataBuffer(dataSize);
     std::memcpy(m_dataBuffer->mapPtr(offset), pointData, dataSize);
+    if (winehuaFlushDynamicMapped())
+      m_dataBuffer->flushMappedSlice(m_dataBuffer->getSliceHandle(offset, dataSize));
 
     HudGraphPushConstants pushData;
     pushData.offset = offset / sizeof(*pointData);

@@ -47,4 +47,9 @@ namespace dxvk {
     return value && value[0] == '1';
   }
 
+  inline bool winehuaPreciseShadowEnabled() {
+    const char* value = std::getenv("DXVK_WINEHUA_PRECISE_SHADOW");
+    return value && value[0] == '1';
+  }
+
 }

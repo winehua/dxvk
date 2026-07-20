@@ -114,6 +114,14 @@ namespace dxvk {
       return m_mapped;
     }
 
+    D3D11_MAP GetMapType() const {
+      return m_mapType;
+    }
+
+    void SetMapType(D3D11_MAP mapType) {
+      m_mapType = mapType;
+    }
+
     /*
      * Returns the logical sub-range bound after WRITE_DISCARD. The preceding
      * invalidateBuffer command selects m_mapped as the physical slice before
@@ -163,6 +171,7 @@ namespace dxvk {
     Rc<DxvkBuffer>                m_buffer;
     Rc<DxvkBuffer>                m_soCounter;
     DxvkBufferSliceHandle         m_mapped;
+    D3D11_MAP                     m_mapType = D3D11_MAP(~0u);
     uint64_t                      m_seq = 0ull;
 
     D3D11DXGIResource             m_resource;

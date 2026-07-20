@@ -212,6 +212,13 @@ namespace dxvk {
 
   VkResult DxvkBuffer::beginMappedSliceWrite(
     const DxvkBufferSliceHandle& slice) const {
+    /* The legacy WineHua bridge used invalidate as an out-of-band "CPU write
+     * begins" marker.  Precise shadow mode restores Vulkan semantics, where
+     * invalidate means Host-to-Guest visibility and a write is published by
+     * the matching flush only. */
+    if (winehuaPreciseShadowEnabled())
+      return VK_SUCCESS;
+
     const DxvkBufferHandle* backing = nullptr;
 
     if (m_buffer.buffer == slice.handle) {
@@ -244,6 +251,49 @@ namespace dxvk {
 
     winehuaSampleTrace(str::format(
       "dynamic-mapped-begin buffer=0x", std::hex, slice.handle,
+      " sliceOffset=", std::dec, slice.offset,
+      " sliceLength=", slice.length,
+      " memory=0x", std::hex, range.memory,
+      " result=", std::dec, result));
+
+    return result;
+  }
+
+
+  VkResult DxvkBuffer::invalidateMappedSlice(
+    const DxvkBufferSliceHandle& slice) const {
+    const DxvkBufferHandle* backing = nullptr;
+
+    if (m_buffer.buffer == slice.handle) {
+      backing = &m_buffer;
+    } else {
+      for (const auto& candidate : m_buffers) {
+        if (candidate.buffer == slice.handle) {
+          backing = &candidate;
+          break;
+        }
+      }
+    }
+
+    if (!backing || !backing->memory)
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    const VkDeviceSize atom =
+      m_device->properties().core.properties.limits.nonCoherentAtomSize;
+    const VkDeviceSize sliceBegin = backing->memory.offset() + slice.offset;
+    const VkDeviceSize sliceEnd = align(sliceBegin + slice.length, atom);
+    VkMappedMemoryRange range;
+    range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.pNext  = nullptr;
+    range.memory = backing->memory.memory();
+    range.offset = (sliceBegin / atom) * atom;
+    range.size   = sliceEnd - range.offset;
+
+    VkResult result = m_device->vkd()->vkInvalidateMappedMemoryRanges(
+      m_device->vkd()->device(), 1, &range);
+
+    winehuaSampleTrace(str::format(
+      "dynamic-mapped-invalidate buffer=0x", std::hex, slice.handle,
       " sliceOffset=", std::dec, slice.offset,
       " sliceLength=", slice.length,
       " memory=0x", std::hex, range.memory,

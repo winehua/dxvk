@@ -3,6 +3,7 @@
 #include "d3d11_bc.h"
 #include "d3d11_device.h"
 #include "d3d11_initializer.h"
+#include "../dxvk/dxvk_winehua_trace.h"
 
 namespace dxvk {
 
@@ -110,6 +111,8 @@ namespace dxvk {
         bufferSlice.mapPtr(0), 0,
         bufferSlice.length());
     }
+    if (winehuaFlushDynamicMapped())
+      bufferSlice.buffer()->flushMappedSlice(bufferSlice.getSliceHandle());
   }
 
 
@@ -186,9 +189,12 @@ namespace dxvk {
           }
 
           if (mapMode != D3D11_COMMON_TEXTURE_MAP_MODE_NONE) {
-            util::packImageData(pTexture->GetMappedBuffer(id)->mapPtr(0),
+            auto mappedBuffer = pTexture->GetMappedBuffer(id);
+            util::packImageData(mappedBuffer->mapPtr(0),
               pInitialData[id].pSysMem, pInitialData[id].SysMemPitch, pInitialData[id].SysMemSlicePitch,
               0, 0, pTexture->GetVkImageType(), mipLevelExtent, 1, formatInfo, formatInfo->aspectMask);
+            if (winehuaFlushDynamicMapped())
+              mappedBuffer->flushMappedSlice(mappedBuffer->getSliceHandle());
           }
         }
       }
@@ -213,6 +219,8 @@ namespace dxvk {
         for (uint32_t i = 0; i < pTexture->CountSubresources(); i++) {
           auto buffer = pTexture->GetMappedBuffer(i);
           std::memset(buffer->mapPtr(0), 0, buffer->info().size);
+          if (winehuaFlushDynamicMapped())
+            buffer->flushMappedSlice(buffer->getSliceHandle());
         }
       }
     }

@@ -290,6 +290,8 @@ namespace dxvk {
     VkResult flushMappedSlice(const DxvkBufferSliceHandle& slice) const;
 
     VkResult beginMappedSliceWrite(const DxvkBufferSliceHandle& slice) const;
+
+    VkResult invalidateMappedSlice(const DxvkBufferSliceHandle& slice) const;
     
   private:
 
