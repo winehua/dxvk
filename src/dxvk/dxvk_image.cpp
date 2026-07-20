@@ -1,6 +1,7 @@
 #include "dxvk_image.h"
 
 #include "dxvk_device.h"
+#include "dxvk_winehua_trace.h"
 
 namespace dxvk {
   
@@ -153,6 +154,21 @@ namespace dxvk {
     if (m_vkd->vkBindImageMemory(m_vkd->device(), m_image.image,
           m_image.memory.memory(), m_image.memory.offset()) != VK_SUCCESS)
       throw DxvkError("DxvkImage::DxvkImage: Failed to bind device memory");
+
+    if (winehuaSampleTraceEnabled()
+     && createInfo.format == VK_FORMAT_R8G8B8A8_UNORM
+     && (createInfo.usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+      winehuaSampleTrace(str::format(
+        "image-create format=R8G8B8A8_UNORM extent=",
+        createInfo.extent.width, "x", createInfo.extent.height, "x", createInfo.extent.depth,
+        " mips=", createInfo.mipLevels, " layers=", createInfo.numLayers,
+        " samples=", createInfo.sampleCount,
+        " tiling=", createInfo.tiling, " flags=0x", std::hex, createInfo.flags,
+        " usage=0x", createInfo.usage, " stages=0x", createInfo.stages,
+        " access=0x", createInfo.access,
+        " layout=", createInfo.layout, " initialLayout=", createInfo.initialLayout,
+        " memoryOffset=", m_image.memory.offset(), " memoryLength=", m_image.memory.length()));
+    }
   }
   
   
@@ -363,6 +379,21 @@ namespace dxvk {
         "\n    Samples:       ", m_image->info().sampleCount,
         "\n    Usage:         ", std::hex, m_image->info().usage,
         "\n    Tiling:        ", m_image->info().tiling));
+    }
+
+    if (winehuaSampleTraceEnabled()
+     && m_image->info().format == VK_FORMAT_R8G8B8A8_UNORM
+     && (m_image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+      winehuaSampleTrace(str::format(
+        "image-view cookie=", m_cookie, " type=", type,
+        " imageHandle=0x", std::hex, m_image->handle(),
+        " viewHandle=0x", m_views[type],
+        " format=", viewInfo.format, " usage=0x", std::hex, m_info.usage,
+        " aspect=0x", viewInfo.subresourceRange.aspectMask,
+        " baseMip=", viewInfo.subresourceRange.baseMipLevel,
+        " mipCount=", viewInfo.subresourceRange.levelCount,
+        " baseLayer=", viewInfo.subresourceRange.baseArrayLayer,
+        " layerCount=", viewInfo.subresourceRange.layerCount));
     }
   }
   

@@ -4,6 +4,8 @@
 
 #include "dxvk_device.h"
 #include "dxvk_context.h"
+#include "dxvk_winehua_trace.h"
+#include "../dxbc/dxbc_util.h"
 
 namespace dxvk {
   
@@ -1748,6 +1750,20 @@ namespace dxvk {
     const DxvkBufferSliceHandle&    slice) {
     // Allocate new backing resource
     DxvkBufferSliceHandle prevSlice = buffer->rename(slice);
+    if (winehuaSampleTraceEnabled()
+     && (buffer->info().usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)) {
+      winehuaSampleTrace(str::format(
+        "dynamic-cb-invalidate buffer=", buffer.operator->(),
+        " prevHandle=0x", std::hex, prevSlice.handle,
+        " prevOffset=", std::dec, prevSlice.offset,
+        " nextHandle=0x", std::hex, slice.handle,
+        " nextOffset=", std::dec, slice.offset,
+        " words=0x", std::hex,
+        reinterpret_cast<const uint32_t*>(slice.mapPtr)[0], ",0x",
+        reinterpret_cast<const uint32_t*>(slice.mapPtr)[1], ",0x",
+        reinterpret_cast<const uint32_t*>(slice.mapPtr)[2], ",0x",
+        reinterpret_cast<const uint32_t*>(slice.mapPtr)[3]));
+    }
     m_cmd->freeBufferSlice(buffer, prevSlice);
     
     // We also need to update all bindings that the buffer
@@ -4218,6 +4234,24 @@ namespace dxvk {
             descriptors[i].image.sampler     = VK_NULL_HANDLE;
             descriptors[i].image.imageView   = res.imageView->handle(binding.view);
             descriptors[i].image.imageLayout = res.imageView->imageInfo().layout;
+
+            if (winehuaSampleTraceEnabled()
+             && res.imageView->imageInfo().format == VK_FORMAT_R8G8B8A8_UNORM
+             && res.imageView->imageInfo().extent.width <= 16
+             && res.imageView->imageInfo().extent.height <= 16) {
+              winehuaSampleTrace(str::format(
+                "descriptor sampled set=0 binding=", i,
+                " resourceSlot=", binding.slot,
+                " viewType=", binding.view,
+                " viewCookie=", res.imageView->cookie(),
+                " imageView=0x", std::hex, descriptors[i].image.imageView,
+                " image=0x", res.imageView->imageHandle(),
+                " sampler=0x", descriptors[i].image.sampler,
+                " layout=", descriptors[i].image.imageLayout,
+                " descriptorType=", binding.type,
+                " shaderStages=0x", binding.stages,
+                " imageUsage=0x", res.imageView->imageInfo().usage));
+            }
             
             if (m_rcTracked.set(binding.slot)) {
               m_cmd->trackResource<DxvkAccess::None>(res.imageView);
@@ -4244,21 +4278,74 @@ namespace dxvk {
           } break;
         
         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-          if (res.sampler != nullptr && res.imageView != nullptr
-           && res.imageView->handle(binding.view) != VK_NULL_HANDLE) {
-            descriptors[i].image.sampler     = res.sampler->handle();
+          {
+            /* WineHua's opt-in DXBC compatibility mode declares the
+             * combined descriptor at the SRV binding while the D3D11 API
+             * still stores the sampler at its normal s# binding. Pair those
+             * slots here. Existing users that bind both objects to one slot
+             * continue to take the fast path. */
+            const DxvkShaderResourceSlot* samplerRes = &res;
+            const uint32_t stageSlot = binding.slot % DxbcStageBindingCount;
+            const bool splitD3d11Binding =
+              res.sampler == nullptr && stageSlot >= DxbcResourceBindingIndex &&
+              stageSlot < DxbcResourceBindingIndex + DxbcResourceBindingCount;
+            const uint32_t samplerSlot = splitD3d11Binding
+              ? binding.slot - (DxbcResourceBindingIndex - DxbcSamplerBindingIndex)
+              : binding.slot;
+            if (splitD3d11Binding)
+              samplerRes = &m_rc[samplerSlot];
+
+          const bool imageReady = res.imageView != nullptr
+            && res.imageView->handle(binding.view) != VK_NULL_HANDLE;
+          const bool samplerReady = samplerRes->sampler != nullptr;
+          /* Texture2D.Load has no s# operand, but combined descriptors still
+           * require a VkSampler handle.  Use the immutable DXVK dummy sampler
+           * when the D3D11 SRV is present and the binding is the WineHua
+           * split SRV/sampler form.  OpImageFetch ignores the sampler; this
+           * keeps the descriptor bound and lets the shader's image-only Load
+           * path remain valid without inventing a sampler in DXBC. */
+          if (imageReady && (samplerReady || splitD3d11Binding)) {
+            const VkDescriptorImageInfo dummy =
+              m_common->dummyResources().imageSamplerDescriptor(binding.view);
+            descriptors[i].image.sampler     = samplerReady
+              ? samplerRes->sampler->handle() : dummy.sampler;
             descriptors[i].image.imageView   = res.imageView->handle(binding.view);
             descriptors[i].image.imageLayout = res.imageView->imageInfo().layout;
+
+            if (winehuaSampleTraceEnabled()
+             && res.imageView->imageInfo().format == VK_FORMAT_R8G8B8A8_UNORM
+             && res.imageView->imageInfo().extent.width <= 16
+             && res.imageView->imageInfo().extent.height <= 16) {
+              winehuaSampleTrace(str::format(
+                "descriptor combined set=0 binding=", i,
+                " resourceSlot=", binding.slot,
+                " samplerSlot=", samplerSlot,
+                " viewType=", binding.view,
+                " viewCookie=", res.imageView->cookie(),
+                " imageView=0x", std::hex, descriptors[i].image.imageView,
+                " image=0x", res.imageView->imageHandle(),
+                " sampler=0x", descriptors[i].image.sampler,
+                " layout=", descriptors[i].image.imageLayout,
+                " descriptorType=", binding.type,
+                " shaderStages=0x", binding.stages,
+                " imageUsage=0x", res.imageView->imageInfo().usage,
+                " split=", splitD3d11Binding ? 1 : 0,
+                " dummySampler=", samplerReady ? 0 : 1));
+            }
             
             if (m_rcTracked.set(binding.slot)) {
-              m_cmd->trackResource<DxvkAccess::None>(res.sampler);
+              if (samplerReady)
+                m_cmd->trackResource<DxvkAccess::None>(samplerRes->sampler);
               m_cmd->trackResource<DxvkAccess::None>(res.imageView);
               m_cmd->trackResource<DxvkAccess::Read>(res.imageView->image());
             }
+            if (splitD3d11Binding && samplerReady && m_rcTracked.set(samplerSlot))
+              m_cmd->trackResource<DxvkAccess::None>(samplerRes->sampler);
           } else {
             bindMask.clr(i);
             descriptors[i].image = m_common->dummyResources().imageSamplerDescriptor(binding.view);
           } break;
+          }
         
         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
           if (res.bufferView != nullptr) {
@@ -4313,6 +4400,11 @@ namespace dxvk {
         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
           if (res.bufferSlice.defined()) {
             descriptors[i] = res.bufferSlice.getDescriptor();
+            winehuaSampleTrace(str::format(
+              "dynamic-cb-descriptor slot=", binding.slot,
+              " handle=0x", std::hex, descriptors[i].buffer.buffer,
+              " physicalOffset=", std::dec, descriptors[i].buffer.offset,
+              " range=", descriptors[i].buffer.range));
             descriptors[i].buffer.offset = 0;
             
             if (m_rcTracked.set(binding.slot))
@@ -4332,6 +4424,27 @@ namespace dxvk {
 
     if (layout->bindingCount()) {
       set = allocateDescriptorSet(layout->descriptorSetLayout());
+
+      if (winehuaSampleTraceEnabled()) {
+        for (uint32_t i = 0; i < layout->bindingCount(); i++) {
+          const auto& binding = layout->binding(i);
+          if (binding.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+           || binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+           || binding.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
+            winehuaSampleTrace(str::format(
+              "descriptor-template-write bindPoint=", BindPoint,
+              " set=0 binding=", i,
+              " resourceSlot=", binding.slot,
+              " descriptorSet=0x", std::hex, set,
+              " updateTemplate=0x", layout->descriptorTemplate(),
+              " descriptorType=", binding.type,
+              " shaderStages=0x", binding.stages,
+              " imageView=0x", descriptors[i].image.imageView,
+              " sampler=0x", descriptors[i].image.sampler,
+              " layout=", descriptors[i].image.imageLayout));
+          }
+        }
+      }
 
       m_cmd->updateDescriptorSetWithTemplate(set,
         layout->descriptorTemplate(), descriptors.data());
@@ -4363,6 +4476,14 @@ namespace dxvk {
     if (set) {
       std::array<uint32_t, MaxNumActiveBindings> offsets;
 
+      if (winehuaSampleTraceEnabled()) {
+        winehuaSampleTrace(str::format(
+          "descriptor-bind bindPoint=", BindPoint,
+          " set=0 descriptorSet=0x", std::hex, set,
+          " pipelineLayout=0x", layout->pipelineLayout(),
+          " dynamicBindingCount=", std::dec, layout->dynamicBindingCount()));
+      }
+
       for (uint32_t i = 0; i < layout->dynamicBindingCount(); i++) {
         const auto& binding = layout->dynamicBinding(i);
         const auto& res     = m_rc[binding.slot];
@@ -4370,6 +4491,10 @@ namespace dxvk {
         offsets[i] = res.bufferSlice.defined()
           ? res.bufferSlice.getDynamicOffset()
           : 0;
+        winehuaSampleTrace(str::format(
+          "dynamic-cb-bind index=", i,
+          " slot=", binding.slot,
+          " dynamicOffset=", offsets[i]));
       }
       
       m_cmd->cmdBindDescriptorSet(BindPoint,

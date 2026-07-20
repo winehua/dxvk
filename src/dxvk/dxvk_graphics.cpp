@@ -6,6 +6,8 @@
 #include "dxvk_spec_const.h"
 #include "dxvk_state_cache.h"
 
+#include <cstdlib>
+
 namespace dxvk {
 
   DxvkGraphicsPipeline::DxvkGraphicsPipeline(
@@ -453,6 +455,9 @@ namespace dxvk {
 
     const DxvkShaderCreateInfo& shaderInfo = shader->info();
     DxvkShaderModuleCreateInfo info;
+    info.freezeBoolSpec = dxvkWineHuaFreezeBoolSpec(m_pipeMgr->m_device);
+    info.boolSpecMask = &state.bsBindingMask;
+    info.boolSpecCount = m_layout->bindingCount();
 
     // Fix up fragment shader outputs for dual-source blending
     if (shaderInfo.stage == VK_SHADER_STAGE_FRAGMENT_BIT) {

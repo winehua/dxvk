@@ -1,6 +1,7 @@
 #include "dxvk_barrier.h"
 #include "dxvk_buffer.h"
 #include "dxvk_device.h"
+#include "dxvk_winehua_trace.h"
 
 #include <algorithm>
 
@@ -161,6 +162,92 @@ namespace dxvk {
       result = std::max(result, devInfo.limits.nonCoherentAtomSize);
       result = std::max(result, VkDeviceSize(64));
     }
+
+    return result;
+  }
+
+
+  VkResult DxvkBuffer::flushMappedSlice(
+    const DxvkBufferSliceHandle& slice) const {
+    const DxvkBufferHandle* backing = nullptr;
+
+    if (m_buffer.buffer == slice.handle) {
+      backing = &m_buffer;
+    } else {
+      for (const auto& candidate : m_buffers) {
+        if (candidate.buffer == slice.handle) {
+          backing = &candidate;
+          break;
+        }
+      }
+    }
+
+    if (!backing || !backing->memory)
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    VkMappedMemoryRange range;
+    range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.pNext  = nullptr;
+    const VkDeviceSize atom =
+      m_device->properties().core.properties.limits.nonCoherentAtomSize;
+    const VkDeviceSize sliceBegin = backing->memory.offset() + slice.offset;
+    const VkDeviceSize sliceEnd = align(sliceBegin + slice.length, atom);
+    range.memory = backing->memory.memory();
+    range.offset = (sliceBegin / atom) * atom;
+    range.size   = sliceEnd - range.offset;
+
+    VkResult result = m_device->vkd()->vkFlushMappedMemoryRanges(
+      m_device->vkd()->device(), 1, &range);
+
+    winehuaSampleTrace(str::format(
+      "dynamic-mapped-flush buffer=0x", std::hex, slice.handle,
+      " sliceOffset=", std::dec, slice.offset,
+      " sliceLength=", slice.length,
+      " memory=0x", std::hex, range.memory,
+      " result=", std::dec, result));
+
+    return result;
+  }
+
+
+  VkResult DxvkBuffer::beginMappedSliceWrite(
+    const DxvkBufferSliceHandle& slice) const {
+    const DxvkBufferHandle* backing = nullptr;
+
+    if (m_buffer.buffer == slice.handle) {
+      backing = &m_buffer;
+    } else {
+      for (const auto& candidate : m_buffers) {
+        if (candidate.buffer == slice.handle) {
+          backing = &candidate;
+          break;
+        }
+      }
+    }
+
+    if (!backing || !backing->memory)
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    VkMappedMemoryRange range;
+    range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.pNext  = nullptr;
+    const VkDeviceSize atom =
+      m_device->properties().core.properties.limits.nonCoherentAtomSize;
+    const VkDeviceSize sliceBegin = backing->memory.offset() + slice.offset;
+    const VkDeviceSize sliceEnd = align(sliceBegin + slice.length, atom);
+    range.memory = backing->memory.memory();
+    range.offset = (sliceBegin / atom) * atom;
+    range.size   = sliceEnd - range.offset;
+
+    VkResult result = m_device->vkd()->vkInvalidateMappedMemoryRanges(
+      m_device->vkd()->device(), 1, &range);
+
+    winehuaSampleTrace(str::format(
+      "dynamic-mapped-begin buffer=0x", std::hex, slice.handle,
+      " sliceOffset=", std::dec, slice.offset,
+      " sliceLength=", slice.length,
+      " memory=0x", std::hex, range.memory,
+      " result=", std::dec, result));
 
     return result;
   }

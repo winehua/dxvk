@@ -1,4 +1,5 @@
 #include "dxvk_barrier.h"
+#include "dxvk_winehua_trace.h"
 
 namespace dxvk {
   
@@ -117,6 +118,23 @@ namespace dxvk {
       barrier.subresourceRange            = subresources;
       barrier.subresourceRange.aspectMask = image->formatInfo()->aspectMask;
       m_imgBarriers.push_back(barrier);
+
+      if (winehuaSampleTraceEnabled()
+       && image->info().format == VK_FORMAT_R8G8B8A8_UNORM
+       && (image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+        winehuaSampleTrace(str::format(
+          "image-barrier format=R8G8B8A8_UNORM oldLayout=", srcLayout,
+          " newLayout=", dstLayout,
+          " srcStages=0x", std::hex, srcStages,
+          " dstStages=0x", dstStages,
+          " srcAccess=0x", srcAccess,
+          " dstAccess=0x", dstAccess,
+          " aspect=0x", barrier.subresourceRange.aspectMask,
+          " baseMip=", barrier.subresourceRange.baseMipLevel,
+          " mipCount=", barrier.subresourceRange.levelCount,
+          " baseLayer=", barrier.subresourceRange.baseArrayLayer,
+          " layerCount=", barrier.subresourceRange.layerCount));
+      }
     }
 
     m_imgSlices.insert(image->handle(),

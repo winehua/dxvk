@@ -911,8 +911,16 @@ namespace dxvk {
     ///////////////////////////////////////
     // Image register manipulation methods
     uint32_t emitLoadSampledImage(
-      const DxbcShaderResource&     textureResource,
-      const DxbcSampler&            samplerResource,
+            DxbcShaderResource&     textureResource,
+            DxbcSampler&            samplerResource,
+            bool                    isDepthCompare);
+
+    /* Combined image samplers are also used by Texture2D.Load and the
+     * image-query instructions, which do not have a sampler operand in DXBC.
+     * Load the combined descriptor and extract its image component with OpImage
+     * instead of emitting an OpLoad from the legacy image-only variable. */
+    uint32_t emitLoadCombinedImage(
+            DxbcShaderResource&     textureResource,
             bool                    isDepthCompare);
     
     ////////////////////////

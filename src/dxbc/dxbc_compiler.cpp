@@ -868,11 +868,17 @@ namespace dxvk {
     // Compute binding slot index for the sampler
     uint32_t bindingId = computeSamplerBinding(
       m_programInfo.type(), samplerId);
+    m_samplers.at(samplerId).bindingId = bindingId;
     
     m_module.decorateDescriptorSet(varId, 0);
     m_module.decorateBinding(varId, bindingId);
     
-    // Store descriptor info for the shader interface
+    // Store descriptor info for the shader interface. In the opt-in
+    // WineHua compatibility mode the sampler is consumed through a
+    // combined image sampler generated when the texture is first sampled.
+    if (m_moduleInfo.options.useCombinedImageSampler)
+      return;
+
     DxvkResourceSlot resource;
     resource.slot = bindingId;
     resource.type = VK_DESCRIPTOR_TYPE_SAMPLER;
@@ -983,6 +989,43 @@ namespace dxvk {
     const uint32_t imageTypeId = m_module.defImageType(sampledTypeId,
       typeInfo.dim, 0, typeInfo.array, typeInfo.ms, typeInfo.sampled,
       imageFormat);
+
+    // Compute the DXVK binding slot index for the resource.
+    // D3D11 needs to bind the actual resource to this slot.
+    uint32_t bindingId = isUav
+      ? computeUavBinding(m_programInfo.type(), registerId)
+      : computeSrvBinding(m_programInfo.type(), registerId);
+
+    /* In the opt-in WineHua compatibility mode sampled resources are
+     * declared lazily as combined image samplers from emitLoadSampledImage.
+     * This keeps the shader interface free of a separated image descriptor,
+     * which is the path currently returning zero on the target Venus stack. */
+    if (!isUav && m_moduleInfo.options.useCombinedImageSampler) {
+      DxbcShaderResource res;
+      res.type          = DxbcResourceType::Typed;
+      res.imageInfo     = typeInfo;
+      res.varId         = 0;
+      res.specId        = 0;
+      res.bindingId     = bindingId;
+      res.sampledType   = sampledType;
+      res.sampledTypeId = sampledTypeId;
+      res.imageTypeId   = imageTypeId;
+      res.colorTypeId   = imageTypeId;
+      res.depthTypeId   = 0;
+
+      if ((sampledType == DxbcScalarType::Float32)
+       && (resourceType == DxbcResourceDim::Texture2D
+        || resourceType == DxbcResourceDim::Texture2DArr
+        || resourceType == DxbcResourceDim::TextureCube
+        || resourceType == DxbcResourceDim::TextureCubeArr)) {
+        res.depthTypeId = m_module.defImageType(sampledTypeId,
+          typeInfo.dim, 1, typeInfo.array, typeInfo.ms, typeInfo.sampled,
+          spv::ImageFormatUnknown);
+      }
+
+      m_textures.at(registerId) = res;
+      return;
+    }
     
     // We'll declare the texture variable with the color type
     // and decide which one to use when the texture is sampled.
@@ -994,12 +1037,6 @@ namespace dxvk {
     
     m_module.setDebugName(varId,
       str::format(isUav ? "u" : "t", registerId).c_str());
-    
-    // Compute the DXVK binding slot index for the resource.
-    // D3D11 needs to bind the actual resource to this slot.
-    uint32_t bindingId = isUav
-      ? computeUavBinding(m_programInfo.type(), registerId)
-      : computeSrvBinding(m_programInfo.type(), registerId);
     
     m_module.decorateDescriptorSet(varId, 0);
     m_module.decorateBinding(varId, bindingId);
@@ -1033,6 +1070,7 @@ namespace dxvk {
       res.imageInfo     = typeInfo;
       res.varId         = varId;
       res.specId        = specConstId;
+      res.bindingId     = bindingId;
       res.sampledType   = sampledType;
       res.sampledTypeId = sampledTypeId;
       res.imageTypeId   = imageTypeId;
@@ -1191,6 +1229,7 @@ namespace dxvk {
       res.imageInfo     = typeInfo;
       res.varId         = varId;
       res.specId        = specConstId;
+      res.bindingId     = bindingId;
       res.sampledType   = sampledType;
       res.sampledTypeId = sampledTypeId;
       res.imageTypeId   = resTypeId;
@@ -3228,8 +3267,8 @@ namespace dxvk {
     const DxbcRegister& samplerReg  = ins.src[2];
     
     // Texture and sampler register IDs
-    const auto& texture = m_textures.at(textureReg.idx[0].offset);
-    const auto& sampler = m_samplers.at(samplerReg.idx[0].offset);
+    auto& texture = m_textures.at(textureReg.idx[0].offset);
+    auto& sampler = m_samplers.at(samplerReg.idx[0].offset);
     
     // Load texture coordinates
     const DxbcRegisterValue coord = emitRegisterLoad(texCoordReg,
@@ -3354,7 +3393,7 @@ namespace dxvk {
     //    (src0) Source address
     //    (src1) Source texture
     //    (src2) Sample number
-    const auto& texture = m_textures.at(ins.src[1].idx[0].offset);
+    auto& texture = m_textures.at(ins.src[1].idx[0].offset);
     const uint32_t imageLayerDim = getTexLayerDim(texture.imageInfo);
     
     // Load the texture coordinates. The last component
@@ -3412,7 +3451,15 @@ namespace dxvk {
     
     // Reading a typed image or buffer view
     // always returns a four-component vector.
-    const uint32_t imageId = m_module.opLoad(texture.imageTypeId, texture.varId);
+    /* A combined descriptor is represented by OpTypeSampledImage.  DXBC
+     * ld/ld2ms has no sampler operand, so extract the image component before
+     * emitting OpImageFetch.  The old path loaded an image-only variable that
+     * is deliberately not declared in combined mode, producing an invalid
+     * SPIR-V id 0 and a device/ring hang on Venus. */
+    const uint32_t imageId = m_moduleInfo.options.useCombinedImageSampler
+      ? m_module.opImage(texture.imageTypeId,
+          emitLoadCombinedImage(texture, false))
+      : m_module.opLoad(texture.imageTypeId, texture.varId);
     
     DxbcRegisterValue result;
     result.type.ctype  = texture.sampledType;
@@ -3461,8 +3508,8 @@ namespace dxvk {
     const DxbcRegister& samplerReg  = ins.src[2 + isExtendedGather];
     
     // Texture and sampler register IDs
-    const auto& texture = m_textures.at(textureReg.idx[0].offset);
-    const auto& sampler = m_samplers.at(samplerReg.idx[0].offset);
+    auto& texture = m_textures.at(textureReg.idx[0].offset);
+    auto& sampler = m_samplers.at(samplerReg.idx[0].offset);
     
     // Image type, which stores the image dimensions etc.
     const uint32_t imageLayerDim = getTexLayerDim(texture.imageInfo);
@@ -3565,8 +3612,8 @@ namespace dxvk {
     const DxbcRegister& samplerReg  = ins.src[2];
     
     // Texture and sampler register IDs
-    const auto& texture = m_textures.at(textureReg.idx[0].offset);
-    const auto& sampler = m_samplers.at(samplerReg.idx[0].offset);
+    auto& texture = m_textures.at(textureReg.idx[0].offset);
+    auto& sampler = m_samplers.at(samplerReg.idx[0].offset);
     const uint32_t imageLayerDim = getTexLayerDim(texture.imageInfo);
     
     // Load the texture coordinates. SPIR-V allows these
@@ -4742,9 +4789,12 @@ namespace dxvk {
 
 
   uint32_t DxbcCompiler::emitLoadSampledImage(
-    const DxbcShaderResource&     textureResource,
-    const DxbcSampler&            samplerResource,
+          DxbcShaderResource&     textureResource,
+          DxbcSampler&            samplerResource,
           bool                    isDepthCompare) {
+    if (m_moduleInfo.options.useCombinedImageSampler)
+      return emitLoadCombinedImage(textureResource, isDepthCompare);
+
     const uint32_t sampledImageType = isDepthCompare
       ? m_module.defSampledImageType(textureResource.depthTypeId)
       : m_module.defSampledImageType(textureResource.colorTypeId);
@@ -4752,6 +4802,38 @@ namespace dxvk {
     return m_module.opSampledImage(sampledImageType,
       m_module.opLoad(textureResource.imageTypeId, textureResource.varId),
       m_module.opLoad(samplerResource.typeId,      samplerResource.varId));
+  }
+
+
+  uint32_t DxbcCompiler::emitLoadCombinedImage(
+          DxbcShaderResource& textureResource,
+          bool               isDepthCompare) {
+    const uint32_t imageTypeId = isDepthCompare
+      ? textureResource.depthTypeId
+      : textureResource.colorTypeId;
+    const uint32_t sampledImageType = m_module.defSampledImageType(imageTypeId);
+
+    if (!textureResource.varId) {
+      const uint32_t bindingId = textureResource.bindingId;
+      textureResource.varId = m_module.newVar(
+        m_module.defPointerType(sampledImageType, spv::StorageClassUniformConstant),
+        spv::StorageClassUniformConstant);
+      m_module.decorateDescriptorSet(textureResource.varId, 0);
+      m_module.decorateBinding(textureResource.varId, bindingId);
+
+      const uint32_t specConstId = m_module.specConstBool(true);
+      m_module.decorateSpecId(specConstId, bindingId);
+      textureResource.specId = specConstId;
+
+      DxvkResourceSlot resource;
+      resource.slot = bindingId;
+      resource.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      resource.view = textureResource.imageInfo.vtype;
+      resource.access = VK_ACCESS_SHADER_READ_BIT;
+      m_resourceSlots.push_back(resource);
+    }
+
+    return m_module.opLoad(sampledImageType, textureResource.varId);
   }
   
   
@@ -5353,11 +5435,18 @@ namespace dxvk {
     DxbcRegisterValue result;
     result.type.ctype  = DxbcScalarType::Uint32;
     result.type.ccount = 1;
-    
+
     if (info.image.sampled == 1) {
-      result.id = m_module.opImageQueryLevels(
-        getVectorTypeId(result.type),
-        m_module.opLoad(info.typeId, info.varId));
+        uint32_t imageId = m_module.opLoad(info.typeId, info.varId);
+        if (m_moduleInfo.options.useCombinedImageSampler
+         && resource.type == DxbcOperandType::Resource) {
+          auto& texture = m_textures.at(resource.idx[0].offset);
+          imageId = m_module.opImage(info.typeId,
+            emitLoadCombinedImage(texture, false));
+        }
+        result.id = m_module.opImageQueryLevels(
+          getVectorTypeId(result.type),
+          imageId);
     } else {
       // Report one LOD in case of UAVs
       result.id = m_module.constu32(1);
@@ -5395,9 +5484,16 @@ namespace dxvk {
       result.type.ccount = 1;
 
       if (info.image.ms) {
-        result.id = m_module.opImageQuerySamples(
-          getVectorTypeId(result.type),
-          m_module.opLoad(info.typeId, info.varId));
+          uint32_t imageId = m_module.opLoad(info.typeId, info.varId);
+          if (m_moduleInfo.options.useCombinedImageSampler
+           && resource.type == DxbcOperandType::Resource) {
+            auto& texture = m_textures.at(resource.idx[0].offset);
+            imageId = m_module.opImage(info.typeId,
+              emitLoadCombinedImage(texture, false));
+          }
+          result.id = m_module.opImageQuerySamples(
+            getVectorTypeId(result.type),
+            imageId);
       } else {
         // OpImageQuerySamples requires MSAA images
         result.id = m_module.constu32(1);
@@ -5419,16 +5515,24 @@ namespace dxvk {
     DxbcRegisterValue result;
     result.type.ctype  = DxbcScalarType::Uint32;
     result.type.ccount = getTexSizeDim(info.image);
-    
-    if (info.image.ms == 0 && info.image.sampled == 1) {
-      result.id = m_module.opImageQuerySizeLod(
-        getVectorTypeId(result.type),
-        m_module.opLoad(info.typeId, info.varId),
-        lod.id);
-    } else {
-      result.id = m_module.opImageQuerySize(
-        getVectorTypeId(result.type),
-        m_module.opLoad(info.typeId, info.varId));
+
+      uint32_t imageId = m_module.opLoad(info.typeId, info.varId);
+      if (m_moduleInfo.options.useCombinedImageSampler
+       && resource.type == DxbcOperandType::Resource) {
+        auto& texture = m_textures.at(resource.idx[0].offset);
+        imageId = m_module.opImage(info.typeId,
+          emitLoadCombinedImage(texture, false));
+      }
+
+      if (info.image.ms == 0 && info.image.sampled == 1) {
+        result.id = m_module.opImageQuerySizeLod(
+          getVectorTypeId(result.type),
+          imageId,
+          lod.id);
+      } else {
+        result.id = m_module.opImageQuerySize(
+          getVectorTypeId(result.type),
+          imageId);
     }
 
     // Report a size of zero for unbound textures

@@ -1,5 +1,6 @@
 #include <cstring>
 
+#include "d3d11_bc.h"
 #include "d3d11_context.h"
 #include "d3d11_device.h"
 #include "d3d11_query.h"
@@ -3258,9 +3259,13 @@ namespace dxvk {
           D3D11Buffer*                      pBuffer,
           UINT                              Offset,
           UINT                              Length) {
+    auto bufferSlice = Length
+      ? pBuffer->GetMappedBufferSlice(16 * Offset, 16 * Length)
+      : DxvkBufferSlice();
+
     EmitCs([
       cSlotId      = Slot,
-      cBufferSlice = Length ? pBuffer->GetBufferSlice(16 * Offset, 16 * Length) : DxvkBufferSlice()
+      cBufferSlice = std::move(bufferSlice)
     ] (DxvkContext* ctx) {
       ctx->bindResourceBuffer(cSlotId, cBufferSlice);
     });
@@ -3722,6 +3727,22 @@ namespace dxvk {
 
     if (!util::isBlockAligned(offset, extent, formatInfo->blockSize, mipExtent)) {
       Logger::err("D3D11: UpdateSubresource1: Unaligned region");
+      return;
+    }
+
+    const bool bcEmulated = formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
+                         && !pDstTexture->GetImage()->formatInfo()->flags.test(DxvkFormatFlag::BlockCompressed);
+    if (bcEmulated) {
+      D3D11BcDecodedImage decoded;
+      if (!DecodeD3D11BcImage(packedFormat, extent, pSrcData,
+                              SrcRowPitch, SrcDepthPitch, decoded)) {
+        Logger::err("WineHua: Failed to decompress BC UpdateSubresource data");
+        return;
+      }
+
+      auto stagingSlice = AllocStagingBuffer(decoded.data.size());
+      std::memcpy(stagingSlice.mapPtr(0), decoded.data.data(), decoded.data.size());
+      UpdateImage(pDstTexture, &subresource, offset, extent, std::move(stagingSlice));
       return;
     }
 

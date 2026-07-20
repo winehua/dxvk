@@ -13,3 +13,9 @@ current Venus driver lacks BC formats or transform feedback, but it does not
 emulate those resources. The product selector must keep this profile separate
 from a fully qualified DXVK profile until format and stream-output support are
 implemented.
+
+Bool sampled-descriptor specialization is selected automatically from the
+Vulkan adapter name for the current `Venus`/`Maleoon` path. The old
+`DXVK_WINEHUA_FREEZE_BOOL_SPEC=1` setting remains a debug force-on override;
+`0` disables it, and `WINEHUA_DXVK_QUIRKS=venus-bool-spec` can opt in a new
+Venus adapter before its name is added to the built-in policy.

@@ -1,5 +1,6 @@
 #include <cstring>
 
+#include "d3d11_bc.h"
 #include "d3d11_device.h"
 #include "d3d11_initializer.h"
 
@@ -138,8 +139,27 @@ namespace dxvk {
           VkExtent3D mipLevelExtent = pTexture->MipLevelExtent(level);
 
           if (mapMode != D3D11_COMMON_TEXTURE_MAP_MODE_STAGING) {
+            const void* uploadData = pInitialData[id].pSysMem;
+            VkDeviceSize uploadRowPitch = pInitialData[id].SysMemPitch;
+            VkDeviceSize uploadSlicePitch = pInitialData[id].SysMemSlicePitch;
+            D3D11BcDecodedImage decoded;
+
+            const bool bcEmulated = formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
+                                 && !image->formatInfo()->flags.test(DxvkFormatFlag::BlockCompressed);
+            if (bcEmulated) {
+              if (!DecodeD3D11BcImage(packedFormat, mipLevelExtent,
+                                      uploadData, uploadRowPitch, uploadSlicePitch,
+                                      decoded))
+                throw DxvkError("WineHua: Failed to decompress initial BC texture data");
+              uploadData = decoded.data.data();
+              uploadRowPitch = decoded.rowPitch;
+              uploadSlicePitch = decoded.slicePitch;
+            }
+
             m_transferCommands += 1;
-            m_transferMemory   += pTexture->GetSubresourceLayout(formatInfo->aspectMask, id).Size;
+            m_transferMemory   += bcEmulated
+                                ? decoded.data.size()
+                                : pTexture->GetSubresourceLayout(formatInfo->aspectMask, id).Size;
             
             VkImageSubresourceLayers subresourceLayers;
             subresourceLayers.aspectMask     = formatInfo->aspectMask;
@@ -150,9 +170,9 @@ namespace dxvk {
             if (formatInfo->aspectMask != (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
               m_context->uploadImage(
                 image, subresourceLayers,
-                pInitialData[id].pSysMem,
-                pInitialData[id].SysMemPitch,
-                pInitialData[id].SysMemSlicePitch);
+                uploadData,
+                uploadRowPitch,
+                uploadSlicePitch);
             } else {
               m_context->updateDepthStencilImage(
                 image, subresourceLayers,

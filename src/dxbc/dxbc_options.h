@@ -60,6 +60,11 @@ namespace dxvk {
     /// Replace ld_ms with ld
     bool disableMsaa = false;
 
+    /// Use combined image samplers for the WineHua sampled-image probe.
+    /// This is intentionally opt-in until separated sampled-image reads are
+    /// verified on the target Venus/Host driver.
+    bool useCombinedImageSampler = false;
+
     /// Float control flags
     DxbcFloatControlFlags floatControl;
 

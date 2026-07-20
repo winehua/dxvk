@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "dxvk_include.h"
+#include "dxvk_bind_mask.h"
 #include "dxvk_limits.h"
 #include "dxvk_pipelayout.h"
 #include "dxvk_shader_key.h"
@@ -14,6 +15,17 @@ namespace dxvk {
   
   class DxvkShader;
   class DxvkShaderModule;
+  class DxvkDevice;
+
+  /**
+   * \\brief Selects the WineHua bool-specialization workaround.
+   *
+   * The default is capability/adapter based.  DXVK_WINEHUA_FREEZE_BOOL_SPEC
+   * remains an explicit debug override (0/1), while WINEHUA_DXVK_QUIRKS can
+   * force the named quirk for a new Venus implementation before its adapter
+   * name is added to the automatic policy.
+   */
+  bool dxvkWineHuaFreezeBoolSpec(const DxvkDevice* device);
   
   /**
    * \brief Built-in specialization constants
@@ -79,6 +91,9 @@ namespace dxvk {
    */
   struct DxvkShaderModuleCreateInfo {
     bool      fsDualSrcBlend  = false;
+    bool      freezeBoolSpec  = false;
+    const DxvkBindingMask* boolSpecMask = nullptr;
+    uint32_t  boolSpecCount   = 0;
     uint32_t  undefinedInputs = 0;
   };
   

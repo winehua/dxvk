@@ -33,6 +33,11 @@ namespace dxvk {
     static const bool enabled = env::getEnvVar("WINEHUA_DXVK_RELAXED_FEATURES") == "1";
     return enabled;
   }
+
+  static bool winehuaBcEmulationEnabled() {
+    static const bool enabled = env::getEnvVar("WINEHUA_DXVK_BC_EMULATION") != "0";
+    return enabled;
+  }
   
   constexpr uint32_t D3D11DXGIDevice::DefaultFrameLatency;
 
@@ -2000,12 +2005,11 @@ namespace dxvk {
       enabled.core.features.samplerAnisotropy                     = supported.core.features.samplerAnisotropy;
       enabled.core.features.shaderClipDistance                    = VK_TRUE;
       enabled.core.features.shaderCullDistance                    = VK_TRUE;
-      // Harmony's Maleoon Vulkan driver does not expose BC formats.  Keep
-      // this feature disabled in WineHua's opt-in compatibility mode so
-      // applications which only use uncompressed textures can still create
-      // a D3D11 device.  BC resources remain unsupported and must not be
-      // silently treated as working until a format-emulation path exists.
-      enabled.core.features.textureCompressionBC                  = relaxedDriverFeatures
+      // WineHua expands BC resources into uncompressed backing images when
+      // the Vulkan driver does not expose desktop BC formats.  Never request
+      // an unsupported Vulkan device feature while that path is active.
+      enabled.core.features.textureCompressionBC                  = (relaxedDriverFeatures
+                                                                  || winehuaBcEmulationEnabled())
                                                                   ? supported.core.features.textureCompressionBC
                                                                   : VK_TRUE;
       enabled.extDepthClipEnable.depthClipEnable                  = supported.extDepthClipEnable.depthClipEnable;
@@ -2018,7 +2022,9 @@ namespace dxvk {
     
     if (featureLevel >= D3D_FEATURE_LEVEL_9_3) {
       enabled.core.features.independentBlend                      = VK_TRUE;
-      enabled.core.features.multiViewport                         = VK_TRUE;
+      enabled.core.features.multiViewport                         = relaxedDriverFeatures
+                                                                  ? supported.core.features.multiViewport
+                                                                  : VK_TRUE;
     }
     
     if (featureLevel >= D3D_FEATURE_LEVEL_10_0) {
@@ -2039,7 +2045,9 @@ namespace dxvk {
     }
     
     if (featureLevel >= D3D_FEATURE_LEVEL_10_1) {
-      enabled.core.features.dualSrcBlend                          = VK_TRUE;
+      enabled.core.features.dualSrcBlend                          = relaxedDriverFeatures
+                                                                  ? supported.core.features.dualSrcBlend
+                                                                  : VK_TRUE;
       enabled.core.features.imageCubeArray                        = VK_TRUE;
     }
     

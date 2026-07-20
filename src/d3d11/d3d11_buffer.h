@@ -114,6 +114,19 @@ namespace dxvk {
       return m_mapped;
     }
 
+    /*
+     * Returns the logical sub-range bound after WRITE_DISCARD. The preceding
+     * invalidateBuffer command selects m_mapped as the physical slice before
+     * this binding is consumed by the CS thread. Baking m_mapped.offset into
+     * the logical offset would add the physical rename offset a second time
+     * when DxvkBufferSlice resolves its descriptor.
+     */
+    DxvkBufferSlice GetMappedBufferSlice(
+            VkDeviceSize offset,
+            VkDeviceSize length) const {
+      return DxvkBufferSlice(m_buffer, offset, length);
+    }
+
     D3D10Buffer* GetD3D10Iface() {
       return &m_d3d10;
     }

@@ -3,6 +3,7 @@
 #include "d3d11_device.h"
 #include "d3d11_fence.h"
 #include "d3d11_texture.h"
+#include "../dxvk/dxvk_winehua_trace.h"
 
 constexpr static uint32_t MinFlushIntervalUs = 750;
 constexpr static uint32_t IncFlushIntervalUs = 250;
@@ -302,6 +303,16 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11ImmediateContext::Unmap(
           ID3D11Resource*             pResource,
           UINT                        Subresource) {
+    if (winehuaFlushDynamicMapped() && pResource) {
+      D3D11_RESOURCE_DIMENSION resourceDim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+      pResource->GetType(&resourceDim);
+
+      if (resourceDim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+        auto buffer = static_cast<D3D11Buffer*>(pResource);
+        buffer->GetBuffer()->flushMappedSlice(buffer->GetMappedSlice());
+      }
+    }
+
     // Since it is very uncommon for images to be mapped compared
     // to buffers, we count the currently mapped images in order
     // to avoid a virtual method call in the common case.
@@ -389,6 +400,13 @@ namespace dxvk {
       // it as the 'new' mapped slice. This assumes that the
       // only way to invalidate a buffer is by mapping it.
       auto physSlice = pResource->DiscardSlice();
+      if (pResource->Desc()->BindFlags & D3D11_BIND_CONSTANT_BUFFER) {
+        winehuaSampleTrace(str::format(
+          "dynamic-cb-map buffer=", pResource->GetBuffer().operator->(),
+          " handle=0x", std::hex, physSlice.handle,
+          " offset=", std::dec, physSlice.offset,
+          " length=", physSlice.length));
+      }
       pMappedResource->pData      = physSlice.mapPtr;
       pMappedResource->RowPitch   = bufferSize;
       pMappedResource->DepthPitch = bufferSize;
@@ -400,6 +418,9 @@ namespace dxvk {
         ctx->invalidateBuffer(cBuffer, cBufferSlice);
       });
 
+      if (winehuaFlushDynamicMapped())
+        pResource->GetBuffer()->beginMappedSliceWrite(physSlice);
+
       return S_OK;
     } else if (likely(MapType == D3D11_MAP_WRITE_NO_OVERWRITE)) {
       // Put this on a fast path without any extra checks since it's
@@ -408,6 +429,8 @@ namespace dxvk {
       pMappedResource->pData      = physSlice.mapPtr;
       pMappedResource->RowPitch   = bufferSize;
       pMappedResource->DepthPitch = bufferSize;
+      if (winehuaFlushDynamicMapped())
+        pResource->GetBuffer()->beginMappedSliceWrite(physSlice);
       return S_OK;
     } else {
       // Quantum Break likes using MAP_WRITE on resources which would force
@@ -445,6 +468,8 @@ namespace dxvk {
           ctx->invalidateBuffer(cBuffer, cBufferSlice);
         });
 
+        if (winehuaFlushDynamicMapped())
+          pResource->GetBuffer()->beginMappedSliceWrite(physSlice);
         std::memcpy(physSlice.mapPtr, prevSlice.mapPtr, physSlice.length);
         pMappedResource->pData      = physSlice.mapPtr;
         pMappedResource->RowPitch   = bufferSize;
@@ -458,6 +483,8 @@ namespace dxvk {
         pMappedResource->pData      = physSlice.mapPtr;
         pMappedResource->RowPitch   = bufferSize;
         pMappedResource->DepthPitch = bufferSize;
+        if (winehuaFlushDynamicMapped() && MapType != D3D11_MAP_READ)
+          pResource->GetBuffer()->beginMappedSliceWrite(physSlice);
         return S_OK;
       }
     }
@@ -661,7 +688,13 @@ namespace dxvk {
       slice = pDstBuffer->GetMappedSlice();
     }
 
+    if (winehuaFlushDynamicMapped())
+      pDstBuffer->GetBuffer()->beginMappedSliceWrite(slice);
+
     std::memcpy(reinterpret_cast<char*>(slice.mapPtr) + Offset, pSrcData, Length);
+
+    if (winehuaFlushDynamicMapped())
+      pDstBuffer->GetBuffer()->flushMappedSlice(slice);
   }
 
 

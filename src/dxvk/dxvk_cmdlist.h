@@ -14,6 +14,7 @@
 #include "dxvk_signal.h"
 #include "dxvk_staging.h"
 #include "dxvk_stats.h"
+#include "dxvk_winehua_trace.h"
 
 namespace dxvk {
   
@@ -785,8 +786,18 @@ namespace dxvk {
     void resetQuery(
             VkQueryPool             queryPool,
             uint32_t                queryId) {
-      m_vkd->vkResetQueryPoolEXT(
-        m_vkd->device(), queryPool, queryId, 1);
+      if (winehuaCommandQueryReset()) {
+        winehuaQueryTrace(str::format(
+          "reset mode=command pool=", queryPool, " id=", queryId));
+        m_cmdBuffersUsed.set(DxvkCmdBuffer::InitBuffer);
+        m_vkd->vkCmdResetQueryPool(
+          m_initBuffer, queryPool, queryId, 1);
+      } else {
+        winehuaQueryTrace(str::format(
+          "reset mode=host pool=", queryPool, " id=", queryId));
+        m_vkd->vkResetQueryPoolEXT(
+          m_vkd->device(), queryPool, queryId, 1);
+      }
     }
 
   private:

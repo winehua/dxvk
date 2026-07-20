@@ -1,4 +1,5 @@
 #include <cstring>
+#include <cstdlib>
 
 #include "../util/util_time.h"
 
@@ -99,6 +100,9 @@ namespace dxvk {
     
     DxvkShaderModuleCreateInfo moduleInfo;
     moduleInfo.fsDualSrcBlend = false;
+    moduleInfo.freezeBoolSpec = dxvkWineHuaFreezeBoolSpec(m_pipeMgr->m_device);
+    moduleInfo.boolSpecMask = &state.bsBindingMask;
+    moduleInfo.boolSpecCount = m_layout->bindingCount();
 
     auto csm = m_shaders.cs->createShaderModule(m_vkd, m_slotMapping, moduleInfo);
 

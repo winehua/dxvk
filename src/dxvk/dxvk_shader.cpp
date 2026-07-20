@@ -1,10 +1,133 @@
 #include "dxvk_shader.h"
+#include "dxvk_adapter.h"
+#include "dxvk_device.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
+#include "../util/util_env.h"
+
 namespace dxvk {
+
+  bool dxvkWineHuaFreezeBoolSpec(const DxvkDevice* device) {
+    const std::string override = env::getEnvVar("DXVK_WINEHUA_FREEZE_BOOL_SPEC");
+    if (override == "1" || override == "true")
+      return true;
+    if (override == "0" || override == "false")
+      return false;
+
+    const std::string quirks = env::getEnvVar("WINEHUA_DXVK_QUIRKS");
+    if (quirks.find("venus-bool-spec") != std::string::npos)
+      return true;
+    if (quirks.find("no-venus-bool-spec") != std::string::npos)
+      return false;
+
+    if (!device || device->adapter() == nullptr)
+      return false;
+
+    const char* deviceName = device->adapter()->deviceProperties().deviceName;
+    /* The current Harmony path exposes the Maleoon device through Mesa
+     * Venus.  Keep this deliberately narrow: other Vulkan implementations
+     * retain native specialization constants unless explicitly quirked. */
+    return std::strstr(deviceName, "Venus") != nullptr ||
+           std::strstr(deviceName, "Maleoon") != nullptr;
+  }
+
+  static bool freezeBoolSpecConstants(
+          SpirvCodeBuffer&       codeBuffer,
+          const DxvkBindingMask* bindingMask,
+          uint32_t               bindingCount) {
+    const uint32_t* code = codeBuffer.data();
+    uint32_t wordCount = codeBuffer.dwords();
+
+    if (wordCount < 5 || code[0] != 0x07230203u || !code[3] || code[3] > 65536u)
+      return false;
+
+    std::vector<uint8_t> boolSpecIds(code[3]);
+    std::vector<uint32_t> boolSpecValues(code[3], uint32_t(-1));
+    uint32_t offset = 5;
+
+    while (offset < wordCount) {
+      uint32_t instruction = code[offset];
+      uint16_t words = uint16_t(instruction >> 16);
+      uint16_t opcode = uint16_t(instruction & 0xffffu);
+
+      if (!words || offset + words > wordCount)
+        return false;
+
+      if ((opcode == spv::OpSpecConstantTrue || opcode == spv::OpSpecConstantFalse)
+       && words >= 3 && code[offset + 2] < boolSpecIds.size()) {
+        boolSpecIds[code[offset + 2]] = 1;
+        boolSpecValues[code[offset + 2]] =
+          opcode == spv::OpSpecConstantTrue ? 1u : 0u;
+      }
+
+      offset += words;
+    }
+
+    std::vector<uint32_t> frozen(code, code + 5);
+    bool changed = false;
+    offset = 5;
+
+    while (offset < wordCount) {
+      uint32_t instruction = code[offset];
+      uint16_t words = uint16_t(instruction >> 16);
+      uint16_t opcode = uint16_t(instruction & 0xffffu);
+
+      if (opcode == spv::OpDecorate && words >= 4
+       && code[offset + 2] == spv::DecorationSpecId
+       && code[offset + 1] < boolSpecIds.size()
+       && boolSpecIds[code[offset + 1]]) {
+        changed = true;
+        offset += words;
+        continue;
+      }
+
+      size_t start = frozen.size();
+      frozen.insert(frozen.end(), code + offset, code + offset + words);
+
+      if (opcode == spv::OpSpecConstantTrue || opcode == spv::OpSpecConstantFalse) {
+        uint32_t value = boolSpecValues[code[offset + 2]];
+        if (bindingMask && value != uint32_t(-1)) {
+          /* Binding bools use SpecId 0..bindingCount-1.  Other bool
+           * specialization constants (for example legacy fixed-function
+           * state) retain their SPIR-V default value. */
+          uint32_t specId = uint32_t(-1);
+          uint32_t scan = 5;
+          while (scan < wordCount) {
+            uint32_t scanInstruction = code[scan];
+            uint16_t scanWords = uint16_t(scanInstruction >> 16);
+            uint16_t scanOpcode = uint16_t(scanInstruction & 0xffffu);
+            if (scanOpcode == spv::OpDecorate && scanWords >= 4 &&
+                code[scan + 1] == code[offset + 2] &&
+                code[scan + 2] == spv::DecorationSpecId) {
+              specId = code[scan + 3];
+              break;
+            }
+            if (!scanWords || scan + scanWords > wordCount) break;
+            scan += scanWords;
+          }
+          if (specId < bindingCount)
+            value = bindingMask->test(specId) ? 1u : 0u;
+        }
+        frozen[start] = (uint32_t(words) << 16) |
+          uint32_t(value ? spv::OpConstantTrue : spv::OpConstantFalse);
+        changed = true;
+      }
+
+      offset += words;
+    }
+
+    if (changed)
+      codeBuffer = SpirvCodeBuffer(frozen.size(), frozen.data());
+
+    return changed;
+  }
   
   DxvkShaderModule::DxvkShaderModule()
   : m_vkd(nullptr), m_stage() {
@@ -152,6 +275,11 @@ namespace dxvk {
         code[ofs] = mapping.getBindingId(code[ofs]);
     }
 
+    /* The ordinary DXVK shader dump is emitted before this remap. For the
+     * WineHua investigation, optionally capture the exact SPIR-V binary that
+     * is handed to vkCreateShaderModule, including final set/binding IDs. */
+    const char* remappedDump = std::getenv("DXVK_WINEHUA_DUMP_REMAPPED_SPIRV");
+    const char* dumpPath = std::getenv("DXVK_SHADER_DUMP_PATH");
     // For dual-source blending we need to re-map
     // location 1, index 0 to location 0, index 1
     if (info.fsDualSrcBlend && m_o1IdxOffset && m_o1LocOffset)
@@ -160,6 +288,21 @@ namespace dxvk {
     // Replace undefined input variables with zero
     for (uint32_t u : bit::BitMask(info.undefinedInputs))
       eliminateInput(spirvCode, u);
+
+    if (info.freezeBoolSpec)
+      freezeBoolSpecConstants(spirvCode, info.boolSpecMask, info.boolSpecCount);
+
+    /* Dump the final module consumed by vkCreate*Pipelines.  The bool
+     * binding specialization workaround above can rewrite OpSpecConstantTrue
+     * to OpConstantTrue and remove its SpecId decoration.  Dumping before
+     * that rewrite made the so-called exact replay exercise a different
+     * SPIR-V binary than the runtime pipeline. */
+    if (remappedDump && remappedDump[0] == '1' && dumpPath && dumpPath[0]) {
+      std::ofstream dumpStream(
+        str::tows(str::format(dumpPath, "/", debugName(), ".remapped.spv").c_str()).c_str(),
+        std::ios_base::binary | std::ios_base::trunc);
+      spirvCode.store(dumpStream);
+    }
 
     return DxvkShaderModule(vkd, this, spirvCode);
   }

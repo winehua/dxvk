@@ -1,4 +1,5 @@
 #include "../d3d11/d3d11_options.h"
+#include "../util/util_env.h"
 
 #include "dxbc_options.h"
 
@@ -42,6 +43,9 @@ namespace dxvk {
     zeroInitWorkgroupMemory  = options.zeroInitWorkgroupMemory;
     forceTgsmBarriers        = options.forceTgsmBarriers;
     disableMsaa              = options.disableMsaa;
+    useCombinedImageSampler  = env::getEnvVar("WINEHUA_DXVK_COMBINED_SAMPLER") == "1";
+    if (useCombinedImageSampler)
+      Logger::info("WineHua: combined image sampler compatibility mode enabled");
     dynamicIndexedConstantBufferAsSsbo = options.constantBufferRangeCheck;
 
     // Disable subgroup early discard on Nvidia because it may hurt performance

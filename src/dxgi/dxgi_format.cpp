@@ -2,6 +2,8 @@
 
 #include <array>
 
+#include "../util/util_env.h"
+
 namespace dxvk {
   
   const std::array<DXGI_VK_FORMAT_MAPPING, 133> g_dxgiFormats = {{
@@ -861,6 +863,65 @@ namespace dxvk {
       RemapDepthFormat(DXGI_FORMAT_D24_UNORM_S8_UINT,     VK_FORMAT_D32_SFLOAT_S8_UINT);
     }
 
+    /* Mobile Vulkan implementations generally expose ASTC/ETC2 rather than
+     * desktop BC formats.  DXGI content cannot be reinterpreted as either of
+     * those encodings, so WineHua expands BC resources once, when data is
+     * uploaded, and stores them in equivalent uncompressed images. */
+    if (!adapter->features().core.features.textureCompressionBC
+     && env::getEnvVar("WINEHUA_DXVK_BC_EMULATION") != "0") {
+      const VkComponentMapping identity = {
+        VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+        VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+
+      auto remap = [this, identity](DXGI_FORMAT format, VkFormat target) {
+        RemapColorFormat(format, target, identity);
+      };
+
+      remap(DXGI_FORMAT_BC1_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC1_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC1_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+      remap(DXGI_FORMAT_BC2_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC2_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC2_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+      remap(DXGI_FORMAT_BC3_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC3_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC3_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+      remap(DXGI_FORMAT_BC4_TYPELESS,   VK_FORMAT_R8_UNORM);
+      remap(DXGI_FORMAT_BC4_UNORM,      VK_FORMAT_R8_UNORM);
+      remap(DXGI_FORMAT_BC4_SNORM,      VK_FORMAT_R8_SNORM);
+      remap(DXGI_FORMAT_BC5_TYPELESS,   VK_FORMAT_R8G8_UNORM);
+      remap(DXGI_FORMAT_BC5_UNORM,      VK_FORMAT_R8G8_UNORM);
+      remap(DXGI_FORMAT_BC5_SNORM,      VK_FORMAT_R8G8_SNORM);
+      remap(DXGI_FORMAT_BC6H_TYPELESS,  VK_FORMAT_R16G16B16A16_SFLOAT);
+      remap(DXGI_FORMAT_BC6H_UF16,      VK_FORMAT_R16G16B16A16_SFLOAT);
+      remap(DXGI_FORMAT_BC6H_SF16,      VK_FORMAT_R16G16B16A16_SFLOAT);
+      remap(DXGI_FORMAT_BC7_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC7_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC7_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+
+      const DXGI_VK_FORMAT_FAMILY rgba8Family = {
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB };
+      const DXGI_VK_FORMAT_FAMILY r8Family = {
+        VK_FORMAT_R8_UNORM, VK_FORMAT_R8_SNORM };
+      const DXGI_VK_FORMAT_FAMILY rg8Family = {
+        VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8_SNORM };
+      const DXGI_VK_FORMAT_FAMILY rgba16fFamily = {
+        VK_FORMAT_R16G16B16A16_SFLOAT };
+
+      for (DXGI_FORMAT format : {
+             DXGI_FORMAT_BC1_TYPELESS, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC1_UNORM_SRGB,
+             DXGI_FORMAT_BC2_TYPELESS, DXGI_FORMAT_BC2_UNORM, DXGI_FORMAT_BC2_UNORM_SRGB,
+             DXGI_FORMAT_BC3_TYPELESS, DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_BC3_UNORM_SRGB,
+             DXGI_FORMAT_BC7_TYPELESS, DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_BC7_UNORM_SRGB })
+        m_dxgiFamilies[uint32_t(format)] = rgba8Family;
+
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC4_TYPELESS)] = r8Family;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC5_TYPELESS)] = rg8Family;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC6H_TYPELESS)] = rgba16fFamily;
+
+      Logger::info("WineHua: BC1-BC7 upload-time decompression enabled");
+    }
+
     if (!adapter->features().ext4444Formats.formatA4R4G4B4) {
       RemapColorFormat(DXGI_FORMAT_B4G4R4A4_UNORM, VK_FORMAT_B4G4R4A4_UNORM_PACK16,
         { VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R,
@@ -971,6 +1032,7 @@ namespace dxvk {
           VkFormat            Target,
           VkComponentMapping  Swizzle) {
     m_dxgiFormats[uint32_t(Format)].FormatColor = Target;
+    m_dxgiFormats[uint32_t(Format)].AspectColor = VK_IMAGE_ASPECT_COLOR_BIT;
     m_dxgiFormats[uint32_t(Format)].Swizzle = Swizzle;
   }
   

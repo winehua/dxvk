@@ -279,6 +279,17 @@ namespace dxvk {
       std::unique_lock<sync::Spinlock> swapLock(m_swapMutex);
       m_nextSlices.push_back(slice);
     }
+
+    /**
+     * \brief Flushes the memory backing a mapped slice
+     *
+     * WineHua's Venus vtest bridge uses a separate Host Vulkan mapping.
+     * The opt-in compatibility path needs an explicit Vulkan flush to
+     * publish CPU writes before an older fence can refresh the shadow map.
+     */
+    VkResult flushMappedSlice(const DxvkBufferSliceHandle& slice) const;
+
+    VkResult beginMappedSliceWrite(const DxvkBufferSliceHandle& slice) const;
     
   private:
 
