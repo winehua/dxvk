@@ -1,6 +1,7 @@
 #include "dxgi_factory.h"
 #include "dxgi_output.h"
 #include "dxgi_swapchain.h"
+#include "../dxvk/dxvk_winehua_trace.h"
 
 namespace dxvk {
   
@@ -266,7 +267,11 @@ namespace dxvk {
     std::lock_guard<dxvk::mutex> lockBuf(m_lockBuffer);
 
     try {
+      winehuaFlowTrace(str::format(
+        "present request count=", m_presentCount,
+        " sync=", SyncInterval, " flags=", PresentFlags));
       HRESULT hr = m_presenter->Present(SyncInterval, PresentFlags, nullptr);
+      winehuaFlowTrace(str::format("present result hr=", hr));
       if (hr == S_OK && !(PresentFlags & DXGI_PRESENT_TEST))
         m_presentCount++;
       return hr;

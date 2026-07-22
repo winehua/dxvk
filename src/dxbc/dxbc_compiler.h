@@ -888,6 +888,9 @@ namespace dxvk {
     DxbcRegisterValue emitRegisterZeroTest(
             DxbcRegisterValue       value,
             DxbcZeroTest            test);
+
+    DxbcRegisterValue emitCubeArrayTo2DArrayCoord(
+            DxbcRegisterValue       coord);
     
     DxbcRegisterValue emitRegisterMaskBits(
             DxbcRegisterValue       value,
@@ -922,6 +925,18 @@ namespace dxvk {
     uint32_t emitLoadCombinedImage(
             DxbcShaderResource&     textureResource,
             bool                    isDepthCompare);
+
+    DxbcRegisterValue emitLoadSamplerEmulationData(
+            uint32_t                samplerId,
+            uint32_t                vectorId);
+
+    DxbcRegisterValue emitCustomBorderColorCorrection(
+            DxbcRegisterValue       value,
+            DxbcRegisterValue       coord,
+      const DxbcRegister&           textureReg,
+      const DxbcShaderResource&     texture,
+            uint32_t                samplerId,
+            DxbcRegisterValue       lod);
     
     ////////////////////////
     // Address load methods

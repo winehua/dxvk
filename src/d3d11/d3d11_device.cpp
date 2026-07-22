@@ -24,6 +24,7 @@
 #include "d3d11_texture.h"
 #include "d3d11_video.h"
 
+#include "../dxvk/dxvk_winehua_trace.h"
 #include "../util/util_env.h"
 #include "../util/util_shared_res.h"
 
@@ -102,9 +103,17 @@ namespace dxvk {
       return S_FALSE;
     
     try {
+      winehuaFlowTrace(str::format(
+        "d3d11-create-buffer begin size=", desc.ByteWidth,
+        " usage=", uint32_t(desc.Usage),
+        " bind=", desc.BindFlags,
+        " cpu=", desc.CPUAccessFlags,
+        " initial=", pInitialData && pInitialData->pSysMem ? 1 : 0));
       const Com<D3D11Buffer> buffer = new D3D11Buffer(this, &desc);
+      winehuaFlowTrace("d3d11-create-buffer object-ready");
       m_initializer->InitBuffer(buffer.ptr(), pInitialData);
       *ppBuffer = buffer.ref();
+      winehuaFlowTrace("d3d11-create-buffer end");
       return S_OK;
     } catch (const DxvkError& e) {
       Logger::err(e.message());
@@ -221,9 +230,20 @@ namespace dxvk {
       return S_FALSE;
     
     try {
+      winehuaFlowTrace(str::format(
+        "d3d11-create-texture2d begin size=", desc.Width, "x", desc.Height,
+        " mips=", desc.MipLevels,
+        " layers=", desc.ArraySize,
+        " format=", uint32_t(desc.Format),
+        " usage=", uint32_t(desc.Usage),
+        " bind=", desc.BindFlags,
+        " cpu=", desc.CPUAccessFlags,
+        " initial=", pInitialData && pInitialData->pSysMem ? 1 : 0));
       Com<D3D11Texture2D> texture = new D3D11Texture2D(this, &desc, nullptr);
+      winehuaFlowTrace("d3d11-create-texture2d object-ready");
       m_initializer->InitTexture(texture->GetCommonTexture(), pInitialData);
       *ppTexture2D = texture.ref();
+      winehuaFlowTrace("d3d11-create-texture2d end");
       return S_OK;
     } catch (const DxvkError& e) {
       Logger::err(e.message());
@@ -338,6 +358,10 @@ namespace dxvk {
     const D3D11_SHADER_RESOURCE_VIEW_DESC1* pDesc,
           ID3D11ShaderResourceView1**       ppSRView) {
     InitReturnPtr(ppSRView);
+
+    winehuaFlowTrace(str::format(
+      "d3d11-create-srv begin resource=", pResource,
+      " desc=", pDesc ? 1 : 0));
 
     if (!pResource)
       return E_INVALIDARG;
@@ -495,6 +519,10 @@ namespace dxvk {
           ID3D11RenderTargetView1**         ppRTView) {
     InitReturnPtr(ppRTView);
 
+    winehuaFlowTrace(str::format(
+      "d3d11-create-rtv begin resource=", pResource,
+      " desc=", pDesc ? 1 : 0));
+
     if (!pResource)
       return E_INVALIDARG;
     
@@ -551,6 +579,10 @@ namespace dxvk {
     const D3D11_DEPTH_STENCIL_VIEW_DESC*    pDesc,
           ID3D11DepthStencilView**          ppDepthStencilView) {
     InitReturnPtr(ppDepthStencilView);
+
+    winehuaFlowTrace(str::format(
+      "d3d11-create-dsv begin resource=", pResource,
+      " desc=", pDesc ? 1 : 0));
     
     if (pResource == nullptr)
       return E_INVALIDARG;
@@ -601,6 +633,10 @@ namespace dxvk {
           SIZE_T                      BytecodeLength,
           ID3D11InputLayout**         ppInputLayout) {
     InitReturnPtr(ppInputLayout);
+
+    winehuaFlowTrace(str::format(
+      "d3d11-create-input-layout begin elements=", NumElements,
+      " bytes=", BytecodeLength));
 
     if (pInputElementDescs == nullptr)
       return E_INVALIDARG;
@@ -1169,6 +1205,9 @@ namespace dxvk {
           ID3D11SamplerState**        ppSamplerState) {
     InitReturnPtr(ppSamplerState);
 
+    winehuaFlowTrace(str::format(
+      "d3d11-create-sampler begin desc=", pSamplerDesc ? 1 : 0));
+
     if (pSamplerDesc == nullptr)
       return E_INVALIDARG;
 
@@ -1451,7 +1490,14 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Device::CheckFormatSupport(
           DXGI_FORMAT Format,
           UINT*       pFormatSupport) {
-    return GetFormatSupportFlags(Format, pFormatSupport, nullptr);
+    winehuaFlowTrace(str::format(
+      "d3d11-check-format begin format=", uint32_t(Format)));
+    const HRESULT hr = GetFormatSupportFlags(Format, pFormatSupport, nullptr);
+    winehuaFlowTrace(str::format(
+      "d3d11-check-format end format=", uint32_t(Format),
+      " hr=", int32_t(hr),
+      " flags=", pFormatSupport ? *pFormatSupport : 0));
+    return hr;
   }
   
   
@@ -1459,7 +1505,16 @@ namespace dxvk {
           DXGI_FORMAT Format,
           UINT        SampleCount,
           UINT*       pNumQualityLevels) {
-    return CheckMultisampleQualityLevels1(Format, SampleCount, 0, pNumQualityLevels);
+    winehuaFlowTrace(str::format(
+      "d3d11-check-msaa begin format=", uint32_t(Format),
+      " samples=", SampleCount));
+    const HRESULT hr = CheckMultisampleQualityLevels1(Format, SampleCount, 0, pNumQualityLevels);
+    winehuaFlowTrace(str::format(
+      "d3d11-check-msaa end format=", uint32_t(Format),
+      " samples=", SampleCount,
+      " hr=", int32_t(hr),
+      " levels=", pNumQualityLevels ? *pNumQualityLevels : 0));
+    return hr;
   }
   
   
@@ -2081,6 +2136,10 @@ namespace dxvk {
     if (pClassLinkage != nullptr)
       Logger::warn("D3D11Device::CreateShaderModule: Class linkage not supported");
 
+    winehuaFlowTrace(str::format(
+      "d3d11-shader begin key=", ShaderKey.toString(),
+      " bytes=", BytecodeLength));
+
     D3D11CommonShader commonShader;
 
     HRESULT hr = m_shaderModules.GetShaderModule(this,
@@ -2101,6 +2160,8 @@ namespace dxvk {
       return E_INVALIDARG;
 
     *pShaderModule = std::move(commonShader);
+    winehuaFlowTrace(str::format(
+      "d3d11-shader end key=", ShaderKey.toString(), " hr=", hr));
     return S_OK;
   }
 

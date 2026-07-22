@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdlib>
 
 #include "../util/log/log.h"
@@ -38,8 +39,34 @@ namespace dxvk {
   }
 
   inline void winehuaQueryTrace(const std::string& message) {
-    if (winehuaQueryTraceEnabled())
+    if (!winehuaQueryTraceEnabled())
+      return;
+
+    static std::atomic<uint32_t> emitted { 0 };
+    const uint32_t index = emitted.fetch_add(1, std::memory_order_relaxed);
+    if (index < 512)
       Logger::info("WineHuaQuery: " + message);
+    else if (index == 512)
+      Logger::info("WineHuaQuery: further records suppressed");
+  }
+
+  /* Bounded startup-flow diagnostics. These are deliberately opt-in because
+   * shader and pipeline creation can happen on multiple worker threads. */
+  inline bool winehuaFlowTraceEnabled() {
+    const char* value = std::getenv("DXVK_WINEHUA_TRACE_FLOW");
+    return value && value[0] == '1';
+  }
+
+  inline void winehuaFlowTrace(const std::string& message) {
+    if (!winehuaFlowTraceEnabled())
+      return;
+
+    static std::atomic<uint32_t> emitted { 0 };
+    const uint32_t index = emitted.fetch_add(1, std::memory_order_relaxed);
+    if (index < 4096)
+      Logger::info("WineHuaFlow: " + message);
+    else if (index == 4096)
+      Logger::info("WineHuaFlow: further records suppressed");
   }
 
   inline bool winehuaFlushDynamicMapped() {

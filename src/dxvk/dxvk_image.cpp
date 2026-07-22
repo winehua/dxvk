@@ -156,10 +156,18 @@ namespace dxvk {
       throw DxvkError("DxvkImage::DxvkImage: Failed to bind device memory");
 
     if (winehuaSampleTraceEnabled()
-     && createInfo.format == VK_FORMAT_R8G8B8A8_UNORM
-     && (createInfo.usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+     && (createInfo.usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+     && (createInfo.format == VK_FORMAT_R8G8B8A8_UNORM
+      || createInfo.format == VK_FORMAT_D16_UNORM
+      || createInfo.format == VK_FORMAT_X8_D24_UNORM_PACK32
+      || createInfo.format == VK_FORMAT_D32_SFLOAT
+      || createInfo.format == VK_FORMAT_D16_UNORM_S8_UINT
+      || createInfo.format == VK_FORMAT_D24_UNORM_S8_UINT
+      || createInfo.format == VK_FORMAT_D32_SFLOAT_S8_UINT)) {
       winehuaSampleTrace(str::format(
-        "image-create format=R8G8B8A8_UNORM extent=",
+        "image-create format=", createInfo.format,
+        " imageHandle=0x", std::hex, m_image.image,
+        " extent=", std::dec,
         createInfo.extent.width, "x", createInfo.extent.height, "x", createInfo.extent.depth,
         " mips=", createInfo.mipLevels, " layers=", createInfo.numLayers,
         " samples=", createInfo.sampleCount,
@@ -424,13 +432,20 @@ namespace dxvk {
     }
 
     if (winehuaSampleTraceEnabled()
-     && m_image->info().format == VK_FORMAT_R8G8B8A8_UNORM
-     && (m_image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
+     && (m_image->info().usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+     && (m_image->info().format == VK_FORMAT_R8G8B8A8_UNORM
+      || m_image->info().format == VK_FORMAT_D16_UNORM
+      || m_image->info().format == VK_FORMAT_X8_D24_UNORM_PACK32
+      || m_image->info().format == VK_FORMAT_D32_SFLOAT
+      || m_image->info().format == VK_FORMAT_D16_UNORM_S8_UINT
+      || m_image->info().format == VK_FORMAT_D24_UNORM_S8_UINT
+      || m_image->info().format == VK_FORMAT_D32_SFLOAT_S8_UINT)) {
       winehuaSampleTrace(str::format(
         "image-view cookie=", m_cookie, " type=", type,
         " imageHandle=0x", std::hex, m_image->handle(),
         " viewHandle=0x", m_views[type],
-        " format=", viewInfo.format, " usage=0x", std::hex, m_info.usage,
+        " imageFormat=", std::dec, m_image->info().format,
+        " viewFormat=", viewInfo.format, " usage=0x", std::hex, m_info.usage,
         " aspect=0x", viewInfo.subresourceRange.aspectMask,
         " baseMip=", viewInfo.subresourceRange.baseMipLevel,
         " mipCount=", viewInfo.subresourceRange.levelCount,

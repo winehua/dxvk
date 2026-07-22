@@ -25,13 +25,23 @@ namespace dxvk {
   void D3D11Initializer::Flush() {
     std::lock_guard<dxvk::mutex> lock(m_mutex);
 
-    if (m_transferCommands != 0)
+    if (m_transferCommands != 0) {
+      winehuaFlowTrace(str::format(
+        "d3d11-init-flush commands=", m_transferCommands,
+        " bytes=", m_transferMemory));
       FlushInternal();
+    }
   }
 
   void D3D11Initializer::InitBuffer(
           D3D11Buffer*                pBuffer,
     const D3D11_SUBRESOURCE_DATA*     pInitialData) {
+    winehuaFlowTrace(str::format(
+      "d3d11-init-buffer size=", pBuffer->Desc()->ByteWidth,
+      " usage=", uint32_t(pBuffer->Desc()->Usage),
+      " bind=", pBuffer->Desc()->BindFlags,
+      " initial=", pInitialData && pInitialData->pSysMem ? 1 : 0));
+
     VkMemoryPropertyFlags memFlags = pBuffer->GetBuffer()->memFlags();
 
     (memFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
@@ -43,6 +53,16 @@ namespace dxvk {
   void D3D11Initializer::InitTexture(
           D3D11CommonTexture*         pTexture,
     const D3D11_SUBRESOURCE_DATA*     pInitialData) {
+    const auto desc = pTexture->Desc();
+    winehuaFlowTrace(str::format(
+      "d3d11-init-texture size=", desc->Width, "x", desc->Height, "x", desc->Depth,
+      " mips=", desc->MipLevels,
+      " layers=", desc->ArraySize,
+      " format=", uint32_t(desc->Format),
+      " usage=", uint32_t(desc->Usage),
+      " bind=", desc->BindFlags,
+      " initial=", pInitialData && pInitialData->pSysMem ? 1 : 0));
+
     (pTexture->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_DIRECT)
       ? InitHostVisibleTexture(pTexture, pInitialData)
       : InitDeviceLocalTexture(pTexture, pInitialData);

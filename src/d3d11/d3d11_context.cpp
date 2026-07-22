@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <cstring>
 
 #include "d3d11_bc.h"
@@ -25,6 +26,34 @@ namespace dxvk {
     m_csFlags   (CsFlags),
     m_csChunk   (AllocCsChunk()),
     m_cmdData   (nullptr) {
+
+    const char* disableSamplerEmulation =
+      std::getenv("WINEHUA_DXVK_DISABLE_CUSTOM_BORDER_EMULATION");
+    m_samplerEmulationEnabled = !Device->features()
+      .extCustomBorderColor.customBorderColorWithoutFormat
+      && !(disableSamplerEmulation && disableSamplerEmulation[0] == '1');
+    winehuaFlowTrace(str::format(
+      "d3d11-context sampler-emulation=", m_samplerEmulationEnabled ? 1 : 0));
+
+    if (m_samplerEmulationEnabled) {
+      for (uint32_t i = 0; i < m_samplerEmulationBuffers.size(); i++) {
+        const auto programType = DxbcProgramType(i);
+        DxvkBufferCreateInfo info;
+        info.size   = sizeof(SamplerEmulationStageData);
+        info.usage  = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        info.stages = util::pipelineStages(GetShaderStage(programType));
+        info.access = VK_ACCESS_UNIFORM_READ_BIT;
+
+        m_samplerEmulationBuffers[i] = Device->createBuffer(info,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        auto slice = m_samplerEmulationBuffers[i]->getSliceHandle();
+        std::memset(slice.mapPtr, 0, slice.length);
+        m_samplerEmulationBuffers[i]->flushMappedSlice(slice);
+      }
+    }
 
   }
   
@@ -150,6 +179,7 @@ namespace dxvk {
   
   void STDMETHODCALLTYPE D3D11DeviceContext::ClearState() {
     D3D10DeviceLock lock = LockContext();
+    winehuaFlowTrace("d3d11-clear-state begin");
 
     // Default shaders
     m_state.vs.shader = nullptr;
@@ -177,6 +207,20 @@ namespace dxvk {
       m_state.gs.samplers[i] = nullptr;
       m_state.ps.samplers[i] = nullptr;
       m_state.cs.samplers[i] = nullptr;
+    }
+
+    if (m_samplerEmulationEnabled) {
+      winehuaFlowTrace("d3d11-clear-state sampler-reset begin");
+      for (auto& stage : m_samplerEmulationData)
+        stage = { };
+
+      UpdateSamplerEmulationBuffer<DxbcProgramType::VertexShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::HullShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::DomainShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::GeometryShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::PixelShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::ComputeShader>();
+      winehuaFlowTrace("d3d11-clear-state sampler-reset end");
     }
     
     // Default shader resources
@@ -260,6 +304,7 @@ namespace dxvk {
     
     // Make sure to apply all state
     ResetState();
+    winehuaFlowTrace("d3d11-clear-state end");
   }
   
   
@@ -3120,6 +3165,38 @@ namespace dxvk {
 
   
   template<DxbcProgramType ShaderStage>
+  void D3D11DeviceContext::UpdateSamplerEmulationBuffer() {
+    if (!m_samplerEmulationEnabled)
+      return;
+
+    constexpr uint32_t stageId = uint32_t(ShaderStage);
+    winehuaFlowTrace(str::format(
+      "d3d11-sampler-buffer begin stage=", stageId));
+    const Rc<DxvkBuffer> buffer = m_samplerEmulationBuffers[stageId];
+    const DxvkBufferSliceHandle slice = buffer->allocSlice();
+    winehuaFlowTrace(str::format(
+      "d3d11-sampler-buffer allocated stage=", stageId));
+
+    std::memcpy(slice.mapPtr,
+      m_samplerEmulationData[stageId].data(),
+      sizeof(SamplerEmulationStageData));
+    buffer->flushMappedSlice(slice);
+
+    EmitCs([
+      cBuffer = buffer,
+      cSlice  = slice
+    ] (DxvkContext* ctx) {
+      ctx->invalidateBuffer(cBuffer, cSlice);
+      ctx->bindResourceBuffer(
+        computeConstantBufferBinding(ShaderStage, 15),
+        DxvkBufferSlice(cBuffer, 0, sizeof(SamplerEmulationStageData)));
+    });
+    winehuaFlowTrace(str::format(
+      "d3d11-sampler-buffer end stage=", stageId));
+  }
+
+
+  template<DxbcProgramType ShaderStage>
   void D3D11DeviceContext::BindShader(
     const D3D11CommonShader*    pShaderModule) {
     // Bind the shader and the ICB at once
@@ -3130,6 +3207,9 @@ namespace dxvk {
         : DxvkBufferSlice(),
       cShader = pShaderModule != nullptr
         ? pShaderModule->GetShader()
+        : nullptr,
+      cSamplerInfo = m_samplerEmulationEnabled
+        ? m_samplerEmulationBuffers[uint32_t(ShaderStage)]
         : nullptr
     ] (DxvkContext* ctx) {
       VkShaderStageFlagBits stage = GetShaderStage(ShaderStage);
@@ -3139,6 +3219,12 @@ namespace dxvk {
 
       ctx->bindShader        (stage,  cShader);
       ctx->bindResourceBuffer(slotId, cSlice);
+
+      if (cSamplerInfo != nullptr) {
+        ctx->bindResourceBuffer(
+          computeConstantBufferBinding(ShaderStage, 15),
+          DxvkBufferSlice(cSamplerInfo, 0, sizeof(SamplerEmulationStageData)));
+      }
     });
   }
 
@@ -3972,6 +4058,7 @@ namespace dxvk {
           UINT                              NumSamplers,
           ID3D11SamplerState* const*        ppSamplers) {
     uint32_t slotId = computeSamplerBinding(ShaderStage, StartSlot);
+    bool samplerInfoChanged = false;
     
     for (uint32_t i = 0; i < NumSamplers; i++) {
       auto sampler = static_cast<D3D11SamplerState*>(ppSamplers[i]);
@@ -3979,8 +4066,19 @@ namespace dxvk {
       if (Bindings[StartSlot + i] != sampler) {
         Bindings[StartSlot + i] = sampler;
         BindSampler(slotId + i, sampler);
+
+        if (m_samplerEmulationEnabled) {
+          m_samplerEmulationData[uint32_t(ShaderStage)][StartSlot + i]
+            = sampler != nullptr
+            ? sampler->GetEmulationData()
+            : D3D11SamplerEmulationData();
+          samplerInfoChanged = true;
+        }
       }
     }
+
+    if (samplerInfoChanged)
+      UpdateSamplerEmulationBuffer<ShaderStage>();
   }
   
   
@@ -4133,7 +4231,7 @@ namespace dxvk {
         // Unbind constant buffers, including the shader's ICB
         auto cbSlotId = computeConstantBufferBinding(programType, 0);
 
-        for (uint32_t j = 0; j <= D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; j++)
+        for (uint32_t j = 0; j < DxbcConstBufBindingCount; j++)
           ctx->bindResourceBuffer(cbSlotId + j, DxvkBufferSlice());
 
         // Unbind shader resource views
@@ -4247,6 +4345,8 @@ namespace dxvk {
     
     for (uint32_t i = 0; i < Bindings.size(); i++)
       BindSampler(slotId + i, Bindings[i]);
+
+    UpdateSamplerEmulationBuffer<Stage>();
   }
   
   

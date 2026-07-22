@@ -85,7 +85,15 @@ namespace dxvk {
 
     // Get query status directly from the query object
     auto query = static_cast<D3D11Query*>(pAsync);
+    winehuaQueryTrace(str::format(
+      "d3d11-get-data begin query=", query,
+      " event=", query->IsEvent() ? 1 : 0,
+      " size=", DataSize,
+      " flags=", GetDataFlags));
     HRESULT hr = query->GetData(pData, GetDataFlags);
+    winehuaQueryTrace(str::format(
+      "d3d11-get-data end query=", query,
+      " hr=", int32_t(hr)));
     
     // If we're likely going to spin on the asynchronous object,
     // flush the context so that we're keeping the GPU busy.
@@ -161,6 +169,21 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11ImmediateContext::Flush1(
           D3D11_CONTEXT_TYPE          ContextType,
           HANDLE                      hEvent) {
+    const bool hasPendingCommands = m_csIsBusy || !m_csChunk->empty();
+    if (hasPendingCommands || hEvent) {
+      winehuaFlowTrace(str::format(
+        "d3d11-flush begin pending=", hasPendingCommands ? 1 : 0,
+        " context-type=", uint32_t(ContextType),
+        " event=", hEvent ? 1 : 0));
+    } else {
+      static std::atomic<uint32_t> emptyFlushes { 0 };
+      const uint32_t index = emptyFlushes.fetch_add(1, std::memory_order_relaxed);
+      if (index < 8)
+        winehuaFlowTrace(str::format("d3d11-flush empty index=", index));
+      else if (index == 8)
+        winehuaFlowTrace("d3d11-flush empty records suppressed");
+    }
+
     m_parent->FlushInitContext();
 
     if (hEvent)
@@ -181,6 +204,10 @@ namespace dxvk {
       m_lastFlush = dxvk::high_resolution_clock::now();
       m_csIsBusy  = false;
     }
+
+    if (hasPendingCommands || hEvent)
+      winehuaFlowTrace(str::format(
+        "d3d11-flush end submitted=", hasPendingCommands ? 1 : 0));
   }
   
   
@@ -230,6 +257,10 @@ namespace dxvk {
           BOOL                RestoreContextState) {
     D3D10DeviceLock lock = LockContext();
 
+    winehuaFlowTrace(str::format(
+      "d3d11-execute-command-list begin list=", pCommandList,
+      " restore=", RestoreContextState ? 1 : 0));
+
     auto commandList = static_cast<D3D11CommandList*>(pCommandList);
     
     // Flush any outstanding commands so that
@@ -244,6 +275,9 @@ namespace dxvk {
     // restore the immediate context's state
     uint64_t csSeqNum = commandList->EmitToCsThread(&m_csThread);
     m_csSeqNum = std::max(m_csSeqNum, csSeqNum);
+
+    winehuaFlowTrace(str::format(
+      "d3d11-execute-command-list emitted seq=", csSeqNum));
     
     if (RestoreContextState)
       RestoreState();
@@ -280,6 +314,13 @@ namespace dxvk {
     D3D11_RESOURCE_DIMENSION resourceDim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
     pResource->GetType(&resourceDim);
 
+    winehuaFlowTrace(str::format(
+      "d3d11-map begin resource=", pResource,
+      " dimension=", uint32_t(resourceDim),
+      " subresource=", Subresource,
+      " type=", uint32_t(MapType),
+      " flags=", MapFlags));
+
     HRESULT hr;
     
     if (likely(resourceDim == D3D11_RESOURCE_DIMENSION_BUFFER)) {
@@ -298,6 +339,11 @@ namespace dxvk {
     else if (resourceDim == D3D11_RESOURCE_DIMENSION_BUFFER)
       static_cast<D3D11Buffer*>(pResource)->SetMapType(MapType);
 
+    winehuaFlowTrace(str::format(
+      "d3d11-map end resource=", pResource,
+      " dimension=", uint32_t(resourceDim),
+      " hr=", int32_t(hr)));
+
     return hr;
   }
   
@@ -305,6 +351,10 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11ImmediateContext::Unmap(
           ID3D11Resource*             pResource,
           UINT                        Subresource) {
+    winehuaFlowTrace(str::format(
+      "d3d11-unmap begin resource=", pResource,
+      " subresource=", Subresource));
+
     if (winehuaFlushDynamicMapped() && pResource) {
       D3D11_RESOURCE_DIMENSION resourceDim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
       pResource->GetType(&resourceDim);
@@ -330,6 +380,10 @@ namespace dxvk {
         UnmapImage(GetCommonTexture(pResource), Subresource);
       }
     }
+
+    winehuaFlowTrace(str::format(
+      "d3d11-unmap end resource=", pResource,
+      " subresource=", Subresource));
   }
 
   void STDMETHODCALLTYPE D3D11ImmediateContext::UpdateSubresource(
@@ -339,8 +393,20 @@ namespace dxvk {
     const void*                             pSrcData,
           UINT                              SrcRowPitch,
           UINT                              SrcDepthPitch) {
+    winehuaFlowTrace(str::format(
+      "d3d11-update begin resource=", pDstResource,
+      " subresource=", DstSubresource,
+      " box=", pDstBox ? 1 : 0,
+      " source=", pSrcData ? 1 : 0,
+      " row-pitch=", SrcRowPitch,
+      " depth-pitch=", SrcDepthPitch));
+
     UpdateResource<D3D11ImmediateContext>(this, pDstResource,
       DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, 0);
+
+    winehuaFlowTrace(str::format(
+      "d3d11-update end resource=", pDstResource,
+      " subresource=", DstSubresource));
   }
 
   
@@ -352,8 +418,21 @@ namespace dxvk {
           UINT                              SrcRowPitch,
           UINT                              SrcDepthPitch,
           UINT                              CopyFlags) {
+    winehuaFlowTrace(str::format(
+      "d3d11-update1 begin resource=", pDstResource,
+      " subresource=", DstSubresource,
+      " box=", pDstBox ? 1 : 0,
+      " source=", pSrcData ? 1 : 0,
+      " row-pitch=", SrcRowPitch,
+      " depth-pitch=", SrcDepthPitch,
+      " copy-flags=", CopyFlags));
+
     UpdateResource<D3D11ImmediateContext>(this, pDstResource,
       DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
+
+    winehuaFlowTrace(str::format(
+      "d3d11-update1 end resource=", pDstResource,
+      " subresource=", DstSubresource));
   }
   
   
@@ -860,8 +939,31 @@ namespace dxvk {
                      + IncFlushIntervalUs * pending;
 
       // Prevent flushing too often in short intervals.
-      if (now - m_lastFlush >= std::chrono::microseconds(delay))
+      if (now - m_lastFlush >= std::chrono::microseconds(delay)) {
+        if (StrongHint || pending > 1) {
+          static std::atomic<uint32_t> strongFlushes { 0 };
+          const uint32_t index = strongFlushes.fetch_add(1, std::memory_order_relaxed);
+          if (index < 16)
+            winehuaFlowTrace(str::format(
+              "d3d11-flush-implicit strong index=", index,
+              " hint=", StrongHint ? 1 : 0,
+              " pending=", pending,
+              " action=flush"));
+          else if (index == 16)
+            winehuaFlowTrace("d3d11-flush-implicit strong records suppressed");
+        } else {
+          static std::atomic<uint32_t> weakFlushes { 0 };
+          const uint32_t index = weakFlushes.fetch_add(1, std::memory_order_relaxed);
+          if (index < 16)
+            winehuaFlowTrace(str::format(
+              "d3d11-flush-implicit weak index=", index,
+              " pending=", pending,
+              " action=flush"));
+          else if (index == 16)
+            winehuaFlowTrace("d3d11-flush-implicit weak records suppressed");
+        }
         Flush();
+      }
     }
   }
 

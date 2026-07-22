@@ -5,6 +5,7 @@
 #include "dxvk_pipemanager.h"
 #include "dxvk_spec_const.h"
 #include "dxvk_state_cache.h"
+#include "dxvk_winehua_trace.h"
 
 #include <cstdlib>
 
@@ -184,6 +185,8 @@ namespace dxvk {
     
     VkSpecializationInfo specInfo = specData.getSpecInfo();
     
+    winehuaFlowTrace("graphics-pipeline begin");
+
     auto vsm  = createShaderModule(m_shaders.vs,  state);
     auto tcsm = createShaderModule(m_shaders.tcs, state);
     auto tesm = createShaderModule(m_shaders.tes, state);
@@ -424,6 +427,9 @@ namespace dxvk {
     if (Logger::logLevel() <= LogLevel::Debug)
       t0 = dxvk::high_resolution_clock::now();
     
+    winehuaFlowTrace(str::format(
+      "graphics-pipeline vkCreate begin stages=", stages.size()));
+
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (m_vkd->vkCreateGraphicsPipelines(m_vkd->device(),
           m_pipeMgr->m_cache->handle(), 1, &info, nullptr, &pipeline) != VK_SUCCESS) {
@@ -431,6 +437,8 @@ namespace dxvk {
       this->logPipelineState(LogLevel::Error, state);
       return VK_NULL_HANDLE;
     }
+
+    winehuaFlowTrace("graphics-pipeline vkCreate end");
     
     if (Logger::logLevel() <= LogLevel::Debug) {
       t1 = dxvk::high_resolution_clock::now();

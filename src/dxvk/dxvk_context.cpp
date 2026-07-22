@@ -8,6 +8,19 @@
 #include "../dxbc/dxbc_util.h"
 
 namespace dxvk {
+
+  static bool winehuaTraceDepthFormat(VkFormat format) {
+    return format == VK_FORMAT_D16_UNORM
+        || format == VK_FORMAT_X8_D24_UNORM_PACK32
+        || format == VK_FORMAT_D32_SFLOAT
+        || format == VK_FORMAT_D16_UNORM_S8_UINT
+        || format == VK_FORMAT_D24_UNORM_S8_UINT
+        || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+  }
+
+  static bool winehuaTraceDepthView(const Rc<DxvkImageView>& view) {
+    return view != nullptr && winehuaTraceDepthFormat(view->imageInfo().format);
+  }
   
   DxvkContext::DxvkContext(const Rc<DxvkDevice>& device)
   : m_device      (device),
@@ -107,6 +120,18 @@ namespace dxvk {
   
   void DxvkContext::bindRenderTargets(
     const DxvkRenderTargets&    targets) {
+    const auto& oldDepth = m_state.om.renderTargets.depth.view;
+    const auto& newDepth = targets.depth.view;
+    if (winehuaSampleTraceEnabled()
+     && (winehuaTraceDepthView(oldDepth) || winehuaTraceDepthView(newDepth))) {
+      winehuaSampleTrace(str::format(
+        "depth-target-bind oldCookie=", oldDepth != nullptr ? oldDepth->cookie() : 0,
+        " oldImage=0x", std::hex, oldDepth != nullptr ? oldDepth->imageHandle() : VK_NULL_HANDLE,
+        " newCookie=", std::dec, newDepth != nullptr ? newDepth->cookie() : 0,
+        " newImage=0x", std::hex, newDepth != nullptr ? newDepth->imageHandle() : VK_NULL_HANDLE,
+        " newLayout=", std::dec, targets.depth.layout));
+    }
+
     // Set up default render pass ops
     m_state.om.renderTargets = targets;
     
@@ -465,6 +490,24 @@ namespace dxvk {
     
     if (m_state.om.framebufferInfo.isFullSize(imageView))
       attachmentIndex = m_state.om.framebufferInfo.findAttachment(imageView);
+
+    if (winehuaSampleTraceEnabled() && winehuaTraceDepthView(imageView)) {
+      winehuaSampleTrace(str::format(
+        "depth-clear-request cookie=", imageView->cookie(),
+        " image=0x", std::hex, imageView->imageHandle(),
+        " view=0x", imageView->handle(),
+        " imageFormat=", std::dec, imageView->imageInfo().format,
+        " viewFormat=", imageView->info().format,
+        " aspect=0x", std::hex, clearAspects,
+        " baseMip=", std::dec, imageView->info().minLevel,
+        " mipCount=", imageView->info().numLevels,
+        " baseLayer=", imageView->info().minLayer,
+        " layerCount=", imageView->info().numLayers,
+        " depth=", clearValue.depthStencil.depth,
+        " stencil=", clearValue.depthStencil.stencil,
+        " attachmentIndex=", attachmentIndex,
+        " renderPassBound=", m_flags.test(DxvkContextFlag::GpRenderPassBound) ? 1 : 0));
+    }
 
     if (attachmentIndex < 0) {
       // Suspend works here because we'll end up with one of these scenarios:
@@ -1333,6 +1376,11 @@ namespace dxvk {
           uint32_t x,
           uint32_t y,
           uint32_t z) {
+    winehuaFlowTrace(str::format(
+      "dispatch request x=", x,
+      " y=", y,
+      " z=", z));
+
     if (this->commitComputeState()) {
       this->commitComputeInitBarriers();
 
@@ -1392,6 +1440,10 @@ namespace dxvk {
           uint32_t instanceCount,
           uint32_t firstVertex,
           uint32_t firstInstance) {
+    winehuaFlowTrace(str::format(
+      "draw request vertices=", vertexCount,
+      " instances=", instanceCount));
+
     if (this->commitGraphicsState<false, false>()) {
       m_cmd->cmdDraw(
         vertexCount, instanceCount,
@@ -1446,6 +1498,10 @@ namespace dxvk {
           uint32_t firstIndex,
           uint32_t vertexOffset,
           uint32_t firstInstance) {
+    winehuaFlowTrace(str::format(
+      "draw-indexed request indices=", indexCount,
+      " instances=", instanceCount));
+
     if (this->commitGraphicsState<true, false>()) {
       m_cmd->cmdDrawIndexed(
         indexCount, instanceCount,
@@ -1932,6 +1988,18 @@ namespace dxvk {
           VkImageAspectFlags        discardAspects,
           VkImageAspectFlags        clearAspects,
           VkClearValue              clearValue) {
+    if (winehuaSampleTraceEnabled() && winehuaTraceDepthView(imageView)) {
+      winehuaSampleTrace(str::format(
+        "depth-clear-perform cookie=", imageView->cookie(),
+        " image=0x", std::hex, imageView->imageHandle(),
+        " view=0x", imageView->handle(),
+        " clearAspects=0x", clearAspects,
+        " discardAspects=0x", discardAspects,
+        " depth=", std::dec, clearValue.depthStencil.depth,
+        " stencil=", clearValue.depthStencil.stencil,
+        " attachmentIndex=", attachmentIndex));
+    }
+
     DxvkColorAttachmentOps colorOp;
     colorOp.loadOp        = VK_ATTACHMENT_LOAD_OP_LOAD;
     colorOp.loadLayout    = imageView->imageInfo().layout;
@@ -1986,6 +2054,9 @@ namespace dxvk {
     }
     
     if (attachmentIndex < 0) {
+      if (winehuaSampleTraceEnabled() && winehuaTraceDepthView(imageView))
+        winehuaSampleTrace("depth-clear-mode temporary-render-pass");
+
       if (m_execBarriers.isImageDirty(
           imageView->image(),
           imageView->imageSubresources(),
@@ -2026,6 +2097,9 @@ namespace dxvk {
       this->renderPassBindFramebuffer(makeFramebufferInfo(attachments), ops, 1, &clearValue);
       this->renderPassUnbindFramebuffer();
     } else {
+      if (winehuaSampleTraceEnabled() && winehuaTraceDepthView(imageView))
+        winehuaSampleTrace("depth-clear-mode folded-load-op");
+
       // Perform the operation when starting the next render pass
       if ((clearAspects | discardAspects) & VK_IMAGE_ASPECT_COLOR_BIT) {
         uint32_t colorIndex = m_state.om.framebufferInfo.getColorAttachmentIndex(attachmentIndex);
@@ -2060,6 +2134,15 @@ namespace dxvk {
     const Rc<DxvkImageView>&        imageView,
           VkImageAspectFlags        clearAspects,
           VkClearValue              clearValue) {
+    if (winehuaSampleTraceEnabled() && winehuaTraceDepthView(imageView)) {
+      winehuaSampleTrace(str::format(
+        "depth-clear-defer cookie=", imageView->cookie(),
+        " image=0x", std::hex, imageView->imageHandle(),
+        " clearAspects=0x", clearAspects,
+        " depth=", std::dec, clearValue.depthStencil.depth,
+        " pendingBefore=", m_deferredClears.size()));
+    }
+
     for (auto& entry : m_deferredClears) {
       if (entry.imageView->matchesView(imageView)) {
         entry.imageView = imageView;
@@ -3858,6 +3941,25 @@ namespace dxvk {
       this->applyRenderTargetLoadLayouts();
       this->flushClears(true);
 
+      const auto& depthView = m_state.om.renderTargets.depth.view;
+      if (winehuaSampleTraceEnabled() && winehuaTraceDepthView(depthView)) {
+        const int32_t depthIndex = m_state.om.framebufferInfo.findAttachment(depthView);
+        const VkClearDepthStencilValue clearValue = depthIndex >= 0
+          ? m_state.om.clearValues[depthIndex].depthStencil
+          : VkClearDepthStencilValue { 0.0f, 0 };
+        winehuaSampleTrace(str::format(
+          "depth-render-pass-begin cookie=", depthView->cookie(),
+          " image=0x", std::hex, depthView->imageHandle(),
+          " view=0x", depthView->handle(),
+          " layout=", std::dec, m_state.om.renderTargets.depth.layout,
+          " loadLayout=", m_state.om.renderPassOps.depthOps.loadLayout,
+          " loadOpDepth=", m_state.om.renderPassOps.depthOps.loadOpD,
+          " loadOpStencil=", m_state.om.renderPassOps.depthOps.loadOpS,
+          " clearDepth=", clearValue.depth,
+          " clearStencil=", clearValue.stencil,
+          " attachmentIndex=", depthIndex));
+      }
+
       m_flags.set(DxvkContextFlag::GpRenderPassBound);
       m_flags.clr(DxvkContextFlag::GpRenderPassSuspended);
 
@@ -4242,9 +4344,10 @@ namespace dxvk {
             descriptors[i].image.imageLayout = res.imageView->imageInfo().layout;
 
             if (winehuaSampleTraceEnabled()
-             && res.imageView->imageInfo().format == VK_FORMAT_R8G8B8A8_UNORM
-             && res.imageView->imageInfo().extent.width <= 16
-             && res.imageView->imageInfo().extent.height <= 16) {
+             && (winehuaTraceDepthView(res.imageView)
+              || (res.imageView->imageInfo().format == VK_FORMAT_R8G8B8A8_UNORM
+               && res.imageView->imageInfo().extent.width <= 16
+               && res.imageView->imageInfo().extent.height <= 16))) {
               winehuaSampleTrace(str::format(
                 "descriptor sampled set=0 binding=", i,
                 " resourceSlot=", binding.slot,
@@ -4252,6 +4355,13 @@ namespace dxvk {
                 " viewCookie=", res.imageView->cookie(),
                 " imageView=0x", std::hex, descriptors[i].image.imageView,
                 " image=0x", res.imageView->imageHandle(),
+                " imageFormat=", std::dec, res.imageView->imageInfo().format,
+                " viewFormat=", res.imageView->info().format,
+                " aspect=0x", std::hex, res.imageView->info().aspect,
+                " baseMip=", std::dec, res.imageView->info().minLevel,
+                " mipCount=", res.imageView->info().numLevels,
+                " baseLayer=", res.imageView->info().minLayer,
+                " layerCount=", res.imageView->info().numLayers,
                 " sampler=0x", descriptors[i].image.sampler,
                 " layout=", descriptors[i].image.imageLayout,
                 " descriptorType=", binding.type,
@@ -4319,9 +4429,10 @@ namespace dxvk {
             descriptors[i].image.imageLayout = res.imageView->imageInfo().layout;
 
             if (winehuaSampleTraceEnabled()
-             && res.imageView->imageInfo().format == VK_FORMAT_R8G8B8A8_UNORM
-             && res.imageView->imageInfo().extent.width <= 16
-             && res.imageView->imageInfo().extent.height <= 16) {
+             && (winehuaTraceDepthView(res.imageView)
+              || (res.imageView->imageInfo().format == VK_FORMAT_R8G8B8A8_UNORM
+               && res.imageView->imageInfo().extent.width <= 16
+               && res.imageView->imageInfo().extent.height <= 16))) {
               winehuaSampleTrace(str::format(
                 "descriptor combined set=0 binding=", i,
                 " resourceSlot=", binding.slot,
@@ -4330,6 +4441,13 @@ namespace dxvk {
                 " viewCookie=", res.imageView->cookie(),
                 " imageView=0x", std::hex, descriptors[i].image.imageView,
                 " image=0x", res.imageView->imageHandle(),
+                " imageFormat=", std::dec, res.imageView->imageInfo().format,
+                " viewFormat=", res.imageView->info().format,
+                " aspect=0x", std::hex, res.imageView->info().aspect,
+                " baseMip=", std::dec, res.imageView->info().minLevel,
+                " mipCount=", res.imageView->info().numLevels,
+                " baseLayer=", res.imageView->info().minLayer,
+                " layerCount=", res.imageView->info().numLayers,
                 " sampler=0x", descriptors[i].image.sampler,
                 " layout=", descriptors[i].image.imageLayout,
                 " descriptorType=", binding.type,
