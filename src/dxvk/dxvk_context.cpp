@@ -4041,6 +4041,38 @@ namespace dxvk {
     info.renderArea           = renderArea;
     info.clearValueCount      = clearValueCount;
     info.pClearValues         = clearValues;
+
+    if (winehuaSampleTraceEnabled()) {
+      for (uint32_t i = 0; i < framebufferInfo.numAttachments(); i++) {
+        const auto& attachment = framebufferInfo.getAttachment(i);
+        if (attachment.view == nullptr)
+          continue;
+
+        const int32_t colorIndex = framebufferInfo.getColorAttachmentIndex(i);
+        const bool isDepth = colorIndex < 0;
+        const auto& viewInfo = attachment.view->info();
+        const auto& imageInfo = attachment.view->imageInfo();
+
+        winehuaRenderPassTrace(str::format(
+          "begin size=", fbSize.width, "x", fbSize.height,
+          " attachment=", i,
+          " kind=", isDepth ? "depth" : "color",
+          " colorIndex=", colorIndex,
+          " viewCookie=", attachment.view->cookie(),
+          " image=0x", std::hex, attachment.view->imageHandle(),
+          " imageFormat=", std::dec, imageInfo.format,
+          " viewFormat=", viewInfo.format,
+          " aspect=0x", std::hex, viewInfo.aspect,
+          " baseMip=", std::dec, viewInfo.minLevel,
+          " mipCount=", viewInfo.numLevels,
+          " baseLayer=", viewInfo.minLayer,
+          " layerCount=", viewInfo.numLayers,
+          " layout=", attachment.layout,
+          " loadLayout=", isDepth ? ops.depthOps.loadLayout : ops.colorOps[colorIndex].loadLayout,
+          " loadOp=", isDepth ? ops.depthOps.loadOpD : ops.colorOps[colorIndex].loadOp,
+          " storeLayout=", isDepth ? ops.depthOps.storeLayout : ops.colorOps[colorIndex].storeLayout));
+      }
+    }
     
     m_cmd->cmdBeginRenderPass(&info,
       VK_SUBPASS_CONTENTS_INLINE);

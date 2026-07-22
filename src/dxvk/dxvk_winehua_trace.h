@@ -23,6 +23,18 @@ namespace dxvk {
       Logger::info("WineHuaSampled: " + message);
   }
 
+  inline void winehuaRenderPassTrace(const std::string& message) {
+    if (!winehuaSampleTraceEnabled())
+      return;
+
+    static std::atomic<uint32_t> emitted { 0 };
+    const uint32_t index = emitted.fetch_add(1, std::memory_order_relaxed);
+    if (index < 1024)
+      Logger::info("WineHuaRenderPass: " + message);
+    else if (index == 1024)
+      Logger::info("WineHuaRenderPass: further records suppressed");
+  }
+
   inline bool winehuaForceSampledGeneral() {
     const char* value = std::getenv("DXVK_WINEHUA_FORCE_SAMPLED_GENERAL");
     return value && value[0] == '1';
