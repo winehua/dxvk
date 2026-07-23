@@ -128,12 +128,254 @@ namespace dxvk {
       }
     }
 
+    if (winehuaDrawTraceEnabled()
+     && nextFrameId == winehuaRenderTargetDumpFrame()) {
+      Logger::info(str::format(
+        "WineHuaDraw: armed frame=", nextFrameId,
+        " pass=", winehuaDrawTracePass(),
+        " maxDraws=", winehuaDrawTraceMaxDraws()));
+    }
+
     m_winehuaFrameId = nextFrameId;
     m_winehuaPassId = 0;
     m_winehuaActivePassId = 0;
+    m_winehuaFrameDrawId = 0;
+    m_winehuaPassDrawId = 0;
+    m_winehuaTraceDrawsEmitted = 0;
     m_winehuaDumpBytes = 0;
     m_winehuaLastGraphicsResourceViews = "[]";
     m_winehuaLastGraphicsImages.clear();
+  }
+
+
+  void DxvkContext::winehuaTraceDraw(
+    const char*         drawType,
+    const std::string&  arguments) {
+    if (!winehuaDrawTraceEnabled()
+     || m_winehuaFrameId != winehuaRenderTargetDumpFrame())
+      return;
+
+    const uint32_t frameDrawId = m_winehuaFrameDrawId++;
+    const uint32_t passDrawId = m_winehuaPassDrawId++;
+    const uint32_t selectedPass = winehuaDrawTracePass();
+
+    if ((selectedPass != UINT32_MAX && m_winehuaActivePassId != selectedPass)
+     || m_winehuaTraceDrawsEmitted >= winehuaDrawTraceMaxDraws())
+      return;
+
+    m_winehuaTraceDrawsEmitted++;
+
+    const std::string vertexShader = m_state.gp.shaders.vs != nullptr
+      ? m_state.gp.shaders.vs->debugName() : std::string();
+    const std::string fragmentShader = m_state.gp.shaders.fs != nullptr
+      ? m_state.gp.shaders.fs->debugName() : std::string();
+
+    std::string pushWords = "[]";
+    uint32_t pushOffset = 0;
+    uint32_t pushSize = 0;
+    if (m_state.gp.pipeline != nullptr && m_state.gp.pipeline->layout() != nullptr) {
+      const VkPushConstantRange range = m_state.gp.pipeline->layout()->pushConstRange();
+      pushOffset = range.offset;
+      pushSize = range.size;
+      if (range.size) {
+        pushWords = "[";
+        const uint32_t wordCount = std::min(range.size, 64u) / sizeof(uint32_t);
+        for (uint32_t i = 0; i < wordCount; i++) {
+          uint32_t word = 0;
+          std::memcpy(&word,
+            &m_state.pc.data[range.offset + i * sizeof(uint32_t)],
+            sizeof(word));
+          if (i)
+            pushWords += ',';
+          pushWords += str::format("0x", std::hex, word);
+        }
+        pushWords += ']';
+      }
+    }
+
+    Logger::info(str::format(
+      "WineHuaDraw: frame=", m_winehuaFrameId,
+      " pass=", m_winehuaActivePassId,
+      " draw=", passDrawId,
+      " frameDraw=", frameDrawId,
+      " type=", drawType,
+      " ", arguments,
+      " pipeline=0x", std::hex, m_gpActivePipeline,
+      " descriptorSet=0x", m_gpSet,
+      " descriptorUpdate=", std::dec, m_winehuaDescriptorUpdateSerial,
+      " descriptorBind=", m_winehuaDescriptorBindSerial,
+      " vs=", vertexShader,
+      " fs=", fragmentShader,
+      " viewport=", m_state.vp.viewports[0].x, ",",
+                       m_state.vp.viewports[0].y, ",",
+                       m_state.vp.viewports[0].width, ",",
+                       m_state.vp.viewports[0].height,
+      " scissor=", m_state.vp.scissorRects[0].offset.x, ",",
+                      m_state.vp.scissorRects[0].offset.y, ",",
+                      m_state.vp.scissorRects[0].extent.width, ",",
+                      m_state.vp.scissorRects[0].extent.height,
+      " pushOffset=", pushOffset,
+      " pushSize=", pushSize,
+      " pushWords=", pushWords));
+
+    for (const auto& binding : m_winehuaGraphicsBindings) {
+      const auto& current = m_rc[binding.resourceSlot];
+
+      if (binding.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER
+       || binding.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+       || binding.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+       || binding.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+        Rc<DxvkSampler> currentSampler = current.sampler;
+        uint32_t currentSamplerSlot = binding.resourceSlot;
+
+        if (binding.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+          const uint32_t stageSlot = binding.resourceSlot % DxbcStageBindingCount;
+          if (currentSampler == nullptr
+           && stageSlot >= DxbcResourceBindingIndex
+           && stageSlot < DxbcResourceBindingIndex + DxbcResourceBindingCount) {
+            currentSamplerSlot = binding.resourceSlot
+              - (DxbcResourceBindingIndex - DxbcSamplerBindingIndex);
+            currentSampler = m_rc[currentSamplerSlot].sampler;
+          }
+        }
+
+        const Rc<DxvkImageView>& currentView = current.imageView;
+        const VkImageView currentViewHandle = currentView != nullptr
+          ? currentView->handle(binding.viewType) : VK_NULL_HANDLE;
+        const VkSampler currentSamplerHandle = currentSampler != nullptr
+          ? currentSampler->handle() : VK_NULL_HANDLE;
+        const uint64_t writtenViewCookie = binding.imageView != nullptr
+          ? binding.imageView->cookie() : 0;
+        const uint64_t currentViewCookie = currentView != nullptr
+          ? currentView->cookie() : 0;
+        const VkImage writtenImage = binding.imageView != nullptr
+          ? binding.imageView->imageHandle() : VK_NULL_HANDLE;
+        const VkImage currentImage = currentView != nullptr
+          ? currentView->imageHandle() : VK_NULL_HANDLE;
+
+        Logger::info(str::format(
+          "WineHuaDrawBinding: frame=", m_winehuaFrameId,
+          " pass=", m_winehuaActivePassId,
+          " draw=", passDrawId,
+          " binding=", binding.binding,
+          " resourceSlot=", binding.resourceSlot,
+          " samplerSlot=", currentSamplerSlot,
+          " descriptorType=", binding.descriptorType,
+          " stages=0x", std::hex, binding.stages,
+          " viewType=", std::dec, binding.viewType,
+          " writtenImageView=0x", std::hex, binding.image.imageView,
+          " writtenSampler=0x", binding.image.sampler,
+          " writtenLayout=", std::dec, binding.image.imageLayout,
+          " writtenViewCookie=", writtenViewCookie,
+          " writtenImage=0x", std::hex, writtenImage,
+          " currentImageView=0x", currentViewHandle,
+          " currentSampler=0x", currentSamplerHandle,
+          " currentViewCookie=", std::dec, currentViewCookie,
+          " currentImage=0x", std::hex, currentImage,
+          " imageIdentityMatch=", std::dec,
+            binding.image.imageView == currentViewHandle ? 1 : 0,
+          " samplerIdentityMatch=",
+            binding.image.sampler == currentSamplerHandle ? 1 : 0,
+          " compareEnable=", binding.sampler != nullptr
+            ? binding.sampler->compareToDepth() : VK_FALSE,
+          " compareOp=", binding.sampler != nullptr
+            ? binding.sampler->compareOp() : VK_COMPARE_OP_NEVER,
+          " currentCompareEnable=", currentSampler != nullptr
+            ? currentSampler->compareToDepth() : VK_FALSE,
+          " currentCompareOp=", currentSampler != nullptr
+            ? currentSampler->compareOp() : VK_COMPARE_OP_NEVER,
+          " imageFormat=", binding.imageView != nullptr
+            ? binding.imageView->imageInfo().format : VK_FORMAT_UNDEFINED,
+          " viewFormat=", binding.imageView != nullptr
+            ? binding.imageView->info().format : VK_FORMAT_UNDEFINED,
+          " aspect=0x", std::hex, binding.imageView != nullptr
+            ? binding.imageView->info().aspect : 0,
+          " baseMip=", std::dec, binding.imageView != nullptr
+            ? binding.imageView->info().minLevel : 0,
+          " mipCount=", binding.imageView != nullptr
+            ? binding.imageView->info().numLevels : 0,
+          " baseLayer=", binding.imageView != nullptr
+            ? binding.imageView->info().minLayer : 0,
+          " layerCount=", binding.imageView != nullptr
+            ? binding.imageView->info().numLayers : 0));
+      } else if (binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+              || binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+              || binding.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+        const DxvkBufferSliceHandle writtenSlice = binding.bufferSlice.defined()
+          ? binding.bufferSlice.getSliceHandle() : DxvkBufferSliceHandle();
+        const DxvkBufferSliceHandle currentSlice = current.bufferSlice.defined()
+          ? current.bufferSlice.getSliceHandle() : DxvkBufferSliceHandle();
+        const VkDeviceSize effectiveOffset = binding.buffer.offset
+          + (binding.dynamicOffsetBound ? binding.dynamicOffset : 0);
+
+        std::string words = "[]";
+        uint64_t contentHash = 1469598103934665603ull;
+        uint64_t hashBytes = 0;
+        bool mapped = false;
+        if (binding.bufferSlice.defined()
+         && (binding.bufferSlice.buffer()->memFlags()
+           & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+         && writtenSlice.mapPtr != nullptr) {
+          mapped = true;
+          hashBytes = std::min<uint64_t>(writtenSlice.length, 4096u);
+          const auto* bytes = reinterpret_cast<const uint8_t*>(writtenSlice.mapPtr);
+          for (uint64_t i = 0; i < hashBytes; i++) {
+            contentHash ^= bytes[i];
+            contentHash *= 1099511628211ull;
+          }
+
+          words = "[";
+          const uint32_t wordCount = uint32_t(
+            std::min<VkDeviceSize>(writtenSlice.length, 64u) / sizeof(uint32_t));
+          for (uint32_t i = 0; i < wordCount; i++) {
+            uint32_t word = 0;
+            std::memcpy(&word, bytes + i * sizeof(uint32_t), sizeof(word));
+            if (i)
+              words += ',';
+            words += str::format("0x", std::hex, word);
+          }
+          words += ']';
+        }
+
+        Logger::info(str::format(
+          "WineHuaDrawBuffer: frame=", m_winehuaFrameId,
+          " pass=", m_winehuaActivePassId,
+          " draw=", passDrawId,
+          " binding=", binding.binding,
+          " resourceSlot=", binding.resourceSlot,
+          " descriptorType=", binding.descriptorType,
+          " stages=0x", std::hex, binding.stages,
+          " writtenHandle=0x", binding.buffer.buffer,
+          " writtenBaseOffset=", std::dec, binding.buffer.offset,
+          " writtenRange=", binding.buffer.range,
+          " dynamicOffsetBound=", binding.dynamicOffsetBound ? 1 : 0,
+          " dynamicOffset=", binding.dynamicOffset,
+          " effectiveOffset=", effectiveOffset,
+          " sliceHandle=0x", std::hex, writtenSlice.handle,
+          " sliceOffset=", std::dec, writtenSlice.offset,
+          " sliceLength=", writtenSlice.length,
+          " currentHandle=0x", std::hex, currentSlice.handle,
+          " currentOffset=", std::dec, currentSlice.offset,
+          " currentLength=", currentSlice.length,
+          " identityMatch=", writtenSlice.handle == currentSlice.handle
+            && writtenSlice.offset == currentSlice.offset
+            && writtenSlice.length == currentSlice.length ? 1 : 0,
+          " mapped=", mapped ? 1 : 0,
+          " hashBytes=", hashBytes,
+          " contentHash=0x", std::hex, contentHash,
+          " words=", words));
+      } else {
+        Logger::info(str::format(
+          "WineHuaDrawBinding: frame=", m_winehuaFrameId,
+          " pass=", m_winehuaActivePassId,
+          " draw=", passDrawId,
+          " binding=", binding.binding,
+          " resourceSlot=", binding.resourceSlot,
+          " descriptorType=", binding.descriptorType,
+          " stages=0x", std::hex, binding.stages,
+          " texelBuffer=0x", binding.texelBuffer));
+      }
+    }
   }
 
 
@@ -1572,6 +1814,12 @@ namespace dxvk {
       " instances=", instanceCount));
 
     if (this->commitGraphicsState<false, false>()) {
+      if (unlikely(winehuaDrawTraceEnabled()))
+        this->winehuaTraceDraw("draw", str::format(
+          "vertexCount=", vertexCount,
+          " instanceCount=", instanceCount,
+          " firstVertex=", firstVertex,
+          " firstInstance=", firstInstance));
       m_cmd->cmdDraw(
         vertexCount, instanceCount,
         firstVertex, firstInstance);
@@ -1587,6 +1835,13 @@ namespace dxvk {
           uint32_t          stride) {
     if (this->commitGraphicsState<false, true>()) {
       auto descriptor = m_state.id.argBuffer.getDescriptor();
+
+      if (unlikely(winehuaDrawTraceEnabled()))
+        this->winehuaTraceDraw("drawIndirect", str::format(
+          "buffer=0x", std::hex, descriptor.buffer.buffer,
+          " offset=", std::dec, descriptor.buffer.offset + offset,
+          " count=", count,
+          " stride=", stride));
       
       m_cmd->cmdDrawIndirect(
         descriptor.buffer.buffer,
@@ -1606,6 +1861,15 @@ namespace dxvk {
     if (this->commitGraphicsState<false, true>()) {
       auto argDescriptor = m_state.id.argBuffer.getDescriptor();
       auto cntDescriptor = m_state.id.cntBuffer.getDescriptor();
+
+      if (unlikely(winehuaDrawTraceEnabled()))
+        this->winehuaTraceDraw("drawIndirectCount", str::format(
+          "argBuffer=0x", std::hex, argDescriptor.buffer.buffer,
+          " argOffset=", std::dec, argDescriptor.buffer.offset + offset,
+          " countBuffer=0x", std::hex, cntDescriptor.buffer.buffer,
+          " countOffset=", std::dec, cntDescriptor.buffer.offset + countOffset,
+          " maxCount=", maxCount,
+          " stride=", stride));
       
       m_cmd->cmdDrawIndirectCount(
         argDescriptor.buffer.buffer,
@@ -1630,6 +1894,13 @@ namespace dxvk {
       " instances=", instanceCount));
 
     if (this->commitGraphicsState<true, false>()) {
+      if (unlikely(winehuaDrawTraceEnabled()))
+        this->winehuaTraceDraw("drawIndexed", str::format(
+          "indexCount=", indexCount,
+          " instanceCount=", instanceCount,
+          " firstIndex=", firstIndex,
+          " vertexOffset=", vertexOffset,
+          " firstInstance=", firstInstance));
       m_cmd->cmdDrawIndexed(
         indexCount, instanceCount,
         firstIndex, vertexOffset,
@@ -1646,6 +1917,13 @@ namespace dxvk {
           uint32_t          stride) {
     if (this->commitGraphicsState<true, true>()) {
       auto descriptor = m_state.id.argBuffer.getDescriptor();
+
+      if (unlikely(winehuaDrawTraceEnabled()))
+        this->winehuaTraceDraw("drawIndexedIndirect", str::format(
+          "buffer=0x", std::hex, descriptor.buffer.buffer,
+          " offset=", std::dec, descriptor.buffer.offset + offset,
+          " count=", count,
+          " stride=", stride));
       
       m_cmd->cmdDrawIndexedIndirect(
         descriptor.buffer.buffer,
@@ -1665,6 +1943,15 @@ namespace dxvk {
     if (this->commitGraphicsState<true, true>()) {
       auto argDescriptor = m_state.id.argBuffer.getDescriptor();
       auto cntDescriptor = m_state.id.cntBuffer.getDescriptor();
+
+      if (unlikely(winehuaDrawTraceEnabled()))
+        this->winehuaTraceDraw("drawIndexedIndirectCount", str::format(
+          "argBuffer=0x", std::hex, argDescriptor.buffer.buffer,
+          " argOffset=", std::dec, argDescriptor.buffer.offset + offset,
+          " countBuffer=0x", std::hex, cntDescriptor.buffer.buffer,
+          " countOffset=", std::dec, cntDescriptor.buffer.offset + countOffset,
+          " maxCount=", maxCount,
+          " stride=", stride));
       
       m_cmd->cmdDrawIndexedIndirectCount(
         argDescriptor.buffer.buffer,
@@ -1684,6 +1971,13 @@ namespace dxvk {
           uint32_t          counterBias) {
     if (this->commitGraphicsState<false, false>()) {
       auto physSlice = counterBuffer.getSliceHandle();
+
+      if (unlikely(winehuaDrawTraceEnabled()))
+        this->winehuaTraceDraw("drawIndirectXfb", str::format(
+          "counterBuffer=0x", std::hex, physSlice.handle,
+          " counterOffset=", std::dec, physSlice.offset,
+          " counterBias=", counterBias,
+          " counterDivisor=", counterDivisor));
 
       m_cmd->cmdDrawIndirectVertexCount(1, 0,
         physSlice.handle,
@@ -4178,12 +4472,17 @@ namespace dxvk {
 
     const bool dumpThisPass = winehuaRenderTargetDumpEnabled()
       && m_winehuaFrameId == winehuaRenderTargetDumpFrame();
-    if (dumpThisPass) {
+    const bool traceThisPass = winehuaDrawTraceEnabled()
+      && m_winehuaFrameId == winehuaRenderTargetDumpFrame();
+    if (dumpThisPass || traceThisPass) {
       m_winehuaActivePassId = m_winehuaPassId++;
+      m_winehuaPassDrawId = 0;
+    }
+    if (dumpThisPass) {
       m_winehuaActivePassOps = ops;
     }
 
-    if (winehuaSampleTraceEnabled() || dumpThisPass) {
+    if (winehuaSampleTraceEnabled() || dumpThisPass || traceThisPass) {
       for (uint32_t i = 0; i < framebufferInfo.numAttachments(); i++) {
         const auto& attachment = framebufferInfo.getAttachment(i);
         if (attachment.view == nullptr)
@@ -4219,6 +4518,8 @@ namespace dxvk {
           winehuaRenderPassTrace(message);
         if (dumpThisPass)
           Logger::info("WineHuaRenderTargetPass: " + message);
+        if (traceThisPass)
+          Logger::info("WineHuaDrawPass: " + message);
       }
     }
     
@@ -4976,6 +5277,80 @@ namespace dxvk {
     }
 
     if constexpr (BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+      if (winehuaDrawTraceEnabled()) {
+        m_winehuaDescriptorUpdateSerial++;
+        m_winehuaGraphicsBindings.clear();
+        m_winehuaGraphicsBindings.reserve(layout->bindingCount());
+
+        for (uint32_t i = 0; i < layout->bindingCount(); i++) {
+          const auto& descriptorBinding = layout->binding(i);
+          const auto& resource = m_rc[descriptorBinding.slot];
+
+          WineHuaGraphicsBindingTrace trace;
+          trace.binding = i;
+          trace.resourceSlot = descriptorBinding.slot;
+          trace.descriptorType = descriptorBinding.type;
+          trace.viewType = descriptorBinding.view;
+          trace.stages = descriptorBinding.stages;
+
+          switch (descriptorBinding.type) {
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+              trace.image = descriptors[i].image;
+              trace.sampler = resource.sampler;
+              break;
+
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+              trace.image = descriptors[i].image;
+              trace.imageView = resource.imageView;
+              break;
+
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: {
+              trace.image = descriptors[i].image;
+              trace.imageView = resource.imageView;
+
+              const uint32_t stageSlot = descriptorBinding.slot % DxbcStageBindingCount;
+              const bool splitD3d11Binding = resource.sampler == nullptr
+                && stageSlot >= DxbcResourceBindingIndex
+                && stageSlot < DxbcResourceBindingIndex + DxbcResourceBindingCount;
+              const uint32_t samplerSlot = splitD3d11Binding
+                ? descriptorBinding.slot
+                    - (DxbcResourceBindingIndex - DxbcSamplerBindingIndex)
+                : descriptorBinding.slot;
+              trace.sampler = m_rc[samplerSlot].sampler;
+            } break;
+
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+              trace.buffer = descriptors[i].buffer;
+              trace.bufferSlice = resource.bufferSlice;
+              break;
+
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+              trace.texelBuffer = descriptors[i].texelBuffer;
+              break;
+
+            default:
+              break;
+          }
+
+          m_winehuaGraphicsBindings.push_back(std::move(trace));
+        }
+
+        if (m_winehuaFrameId == winehuaRenderTargetDumpFrame()) {
+          Logger::info(str::format(
+            "WineHuaDrawDescriptor: event=update frame=", m_winehuaFrameId,
+            " pass=", m_winehuaActivePassId,
+            " serial=", m_winehuaDescriptorUpdateSerial,
+            " descriptorSet=0x", std::hex, set,
+            " bindingCount=", std::dec, layout->bindingCount()));
+        }
+      }
+    }
+
+    if constexpr (BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
       if (winehuaRenderTargetDumpEnabled()
        && m_winehuaFrameId == winehuaRenderTargetDumpFrame()) {
         std::string resourceViews = "[";
@@ -5052,10 +5427,38 @@ namespace dxvk {
         offsets[i] = res.bufferSlice.defined()
           ? res.bufferSlice.getDynamicOffset()
           : 0;
+
+        if constexpr (BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+          if (winehuaDrawTraceEnabled()) {
+            for (auto& trace : m_winehuaGraphicsBindings) {
+              if (trace.resourceSlot == binding.slot
+               && trace.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {
+                trace.dynamicOffset = offsets[i];
+                trace.dynamicOffsetBound = true;
+                trace.bufferSlice = res.bufferSlice;
+                break;
+              }
+            }
+          }
+        }
         winehuaSampleTrace(str::format(
           "dynamic-cb-bind index=", i,
           " slot=", binding.slot,
           " dynamicOffset=", offsets[i]));
+      }
+
+      if constexpr (BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+        if (winehuaDrawTraceEnabled()) {
+          m_winehuaDescriptorBindSerial++;
+          if (m_winehuaFrameId == winehuaRenderTargetDumpFrame()) {
+            Logger::info(str::format(
+              "WineHuaDrawDescriptor: event=bind frame=", m_winehuaFrameId,
+              " pass=", m_winehuaActivePassId,
+              " serial=", m_winehuaDescriptorBindSerial,
+              " descriptorSet=0x", std::hex, set,
+              " dynamicBindingCount=", std::dec, layout->dynamicBindingCount()));
+          }
+        }
       }
       
       m_cmd->cmdBindDescriptorSet(BindPoint,

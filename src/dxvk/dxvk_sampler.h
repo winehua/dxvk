@@ -67,11 +67,21 @@ namespace dxvk {
     VkSampler handle() const {
       return m_sampler;
     }
+
+    VkBool32 compareToDepth() const {
+      return m_compareToDepth;
+    }
+
+    VkCompareOp compareOp() const {
+      return m_compareOp;
+    }
     
   private:
     
     Rc<vk::DeviceFn>      m_vkd;
     VkSampler             m_sampler = VK_NULL_HANDLE;
+    VkBool32              m_compareToDepth = VK_FALSE;
+    VkCompareOp           m_compareOp = VK_COMPARE_OP_NEVER;
 
     static VkBorderColor getBorderColor(
       const Rc<DxvkDevice>&         device,

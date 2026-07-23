@@ -1102,6 +1102,22 @@ namespace dxvk {
       VkDescriptorType        descriptorType = VK_DESCRIPTOR_TYPE_MAX_ENUM;
       Rc<DxvkImageView>       view;
     };
+
+    struct WineHuaGraphicsBindingTrace {
+      uint32_t                binding       = 0;
+      uint32_t                resourceSlot  = 0;
+      VkDescriptorType        descriptorType = VK_DESCRIPTOR_TYPE_MAX_ENUM;
+      VkImageViewType         viewType      = VK_IMAGE_VIEW_TYPE_MAX_ENUM;
+      VkShaderStageFlags      stages        = 0;
+      VkDescriptorImageInfo   image         = { };
+      VkDescriptorBufferInfo  buffer        = { };
+      VkBufferView            texelBuffer   = VK_NULL_HANDLE;
+      VkDeviceSize            dynamicOffset = 0;
+      bool                    dynamicOffsetBound = false;
+      Rc<DxvkSampler>         sampler;
+      Rc<DxvkImageView>       imageView;
+      DxvkBufferSlice         bufferSlice;
+    };
     
     Rc<DxvkDevice>          m_device;
     DxvkObjects*            m_common;
@@ -1139,11 +1155,17 @@ namespace dxvk {
     std::vector<DxvkDeferredClear> m_deferredClears;
     std::vector<WineHuaRenderTargetDump> m_winehuaRenderTargetDumps;
     std::vector<WineHuaGraphicsResourceDump> m_winehuaLastGraphicsImages;
+    std::vector<WineHuaGraphicsBindingTrace> m_winehuaGraphicsBindings;
 
     uint64_t m_winehuaFrameId = 0;
     uint64_t m_winehuaDumpBytes = 0;
+    uint64_t m_winehuaDescriptorUpdateSerial = 0;
+    uint64_t m_winehuaDescriptorBindSerial = 0;
     uint32_t m_winehuaPassId = 0;
     uint32_t m_winehuaActivePassId = 0;
+    uint32_t m_winehuaFrameDrawId = 0;
+    uint32_t m_winehuaPassDrawId = 0;
+    uint32_t m_winehuaTraceDrawsEmitted = 0;
     DxvkRenderPassOps m_winehuaActivePassOps = { };
     std::string m_winehuaLastGraphicsResourceViews = "[]";
 
@@ -1287,6 +1309,10 @@ namespace dxvk {
       const Rc<DxvkImageView>&      view);
 
     void winehuaWriteRenderTargetDumps();
+
+    void winehuaTraceDraw(
+      const char*         drawType,
+      const std::string&  arguments);
     
     void resetRenderPassOps(
       const DxvkRenderTargets&    renderTargets,

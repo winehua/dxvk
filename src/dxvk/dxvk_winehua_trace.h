@@ -57,6 +57,43 @@ namespace dxvk {
     return frame;
   }
 
+  inline bool winehuaDrawTraceEnabled() {
+    static int enabled = -1;
+    if (enabled < 0) {
+      const char* value = std::getenv("WINEHUA_DXVK_TRACE_DRAWS");
+      enabled = value && value[0] == '1' ? 1 : 0;
+    }
+    return enabled != 0;
+  }
+
+  inline uint32_t winehuaDrawTracePass() {
+    static uint32_t pass = UINT32_MAX;
+    static bool initialized = false;
+    if (!initialized) {
+      const char* value = std::getenv("WINEHUA_DXVK_TRACE_PASS");
+      char* end = nullptr;
+      if (value && value[0]) {
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        pass = end && *end == '\0' ? uint32_t(parsed) : UINT32_MAX;
+      }
+      initialized = true;
+    }
+    return pass;
+  }
+
+  inline uint32_t winehuaDrawTraceMaxDraws() {
+    static uint32_t count = UINT32_MAX;
+    if (count == UINT32_MAX) {
+      const char* value = std::getenv("WINEHUA_DXVK_TRACE_DRAW_MAX");
+      char* end = nullptr;
+      count = value && value[0]
+        ? uint32_t(std::strtoul(value, &end, 10)) : 2048u;
+      if (!end || *end != '\0' || !count)
+        count = 2048u;
+    }
+    return count;
+  }
+
   inline uint32_t winehuaRenderTargetDumpMaxAttachments() {
     static uint32_t count = UINT32_MAX;
     if (count == UINT32_MAX) {
