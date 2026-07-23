@@ -132,6 +132,7 @@ namespace dxvk {
     m_winehuaPassId = 0;
     m_winehuaActivePassId = 0;
     m_winehuaDumpBytes = 0;
+    m_winehuaLastGraphicsResourceViews = "[]";
   }
 
 
@@ -195,6 +196,16 @@ namespace dxvk {
         << ",\"extent\":[" << dump.extent.width << ','
                               << dump.extent.height << ','
                               << dump.extent.depth << ']'
+        << ",\"viewport\":[" << dump.viewport.x << ','
+                                 << dump.viewport.y << ','
+                                 << dump.viewport.width << ','
+                                 << dump.viewport.height << ','
+                                 << dump.viewport.minDepth << ','
+                                 << dump.viewport.maxDepth << ']'
+        << ",\"scissor\":[" << dump.scissor.offset.x << ','
+                                << dump.scissor.offset.y << ','
+                                << dump.scissor.extent.width << ','
+                                << dump.scissor.extent.height << ']'
         << ",\"baseMip\":" << dump.baseMip
         << ",\"baseLayer\":" << dump.baseLayer
         << ",\"layerCount\":" << dump.layerCount
@@ -4233,28 +4244,7 @@ namespace dxvk {
     if (m_winehuaActivePassId < winehuaRenderTargetDumpFirstPass())
       return;
 
-    std::string resourceViews = "[";
-    bool firstResource = true;
-    for (uint32_t i = 0; i < MaxNumResourceSlots; i++) {
-      const auto& view = m_rc[i].imageView;
-      if (view == nullptr)
-        continue;
-
-      if (!firstResource)
-        resourceViews += ',';
-      resourceViews += str::format(
-        "{\"slot\":", i,
-        ",\"viewCookie\":", view->cookie(),
-        ",\"imageHandle\":", uint64_t(view->imageHandle()),
-        ",\"viewFormat\":", uint32_t(view->info().format),
-        ",\"aspect\":", uint32_t(view->info().aspect),
-        ",\"baseMip\":", view->info().minLevel,
-        ",\"baseLayer\":", view->info().minLayer,
-        ",\"layerCount\":", view->info().numLayers,
-        '}');
-      firstResource = false;
-    }
-    resourceViews += ']';
+    const std::string resourceViews = m_winehuaLastGraphicsResourceViews;
 
     const std::string vertexShader = m_state.gp.shaders.vs != nullptr
       ? m_state.gp.shaders.vs->debugName() : std::string();
@@ -4298,6 +4288,8 @@ namespace dxvk {
       dump.storeLayout = isDepth
         ? ops.depthOps.storeLayout : ops.colorOps[colorIndex].storeLayout;
       dump.extent = attachment.view->mipLevelExtent(0);
+      dump.viewport = m_state.vp.viewports[0];
+      dump.scissor = m_state.vp.scissorRects[0];
       dump.baseMip = viewInfo.minLevel;
       dump.baseLayer = imageInfo.type == VK_IMAGE_TYPE_3D
         ? 0u : viewInfo.minLayer;
@@ -4880,6 +4872,40 @@ namespace dxvk {
         layout->descriptorTemplate(), descriptors.data());
     } else {
       set = VK_NULL_HANDLE;
+    }
+
+    if constexpr (BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+      if (winehuaRenderTargetDumpEnabled()
+       && m_winehuaFrameId == winehuaRenderTargetDumpFrame()) {
+        std::string resourceViews = "[";
+        bool firstResource = true;
+        for (uint32_t i = 0; i < layout->bindingCount(); i++) {
+          const auto& binding = layout->binding(i);
+          const auto& view = m_rc[binding.slot].imageView;
+          if (view == nullptr)
+            continue;
+
+          if (!firstResource)
+            resourceViews += ',';
+          resourceViews += str::format(
+            "{\"binding\":", i,
+            ",\"resourceSlot\":", binding.slot,
+            ",\"descriptorType\":", uint32_t(binding.type),
+            ",\"descriptorImageView\":", uint64_t(descriptors[i].image.imageView),
+            ",\"descriptorSampler\":", uint64_t(descriptors[i].image.sampler),
+            ",\"viewCookie\":", view->cookie(),
+            ",\"imageHandle\":", uint64_t(view->imageHandle()),
+            ",\"viewFormat\":", uint32_t(view->info().format),
+            ",\"aspect\":", uint32_t(view->info().aspect),
+            ",\"baseMip\":", view->info().minLevel,
+            ",\"baseLayer\":", view->info().minLayer,
+            ",\"layerCount\":", view->info().numLayers,
+            '}');
+          firstResource = false;
+        }
+        resourceViews += ']';
+        m_winehuaLastGraphicsResourceViews = std::move(resourceViews);
+      }
     }
 
     // Select the active binding mask to update

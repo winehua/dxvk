@@ -1079,6 +1079,8 @@ namespace dxvk {
       VkImageLayout           storeLayout   = VK_IMAGE_LAYOUT_UNDEFINED;
       VkAttachmentLoadOp      loadOp        = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
       VkExtent3D              extent        = { 0, 0, 0 };
+      VkViewport              viewport      = { 0, 0, 0, 0, 0, 0 };
+      VkRect2D                scissor       = { { 0, 0 }, { 0, 0 } };
       uint32_t                baseMip       = 0;
       uint32_t                baseLayer     = 0;
       uint32_t                layerCount    = 0;
@@ -1132,6 +1134,7 @@ namespace dxvk {
     uint32_t m_winehuaPassId = 0;
     uint32_t m_winehuaActivePassId = 0;
     DxvkRenderPassOps m_winehuaActivePassOps = { };
+    std::string m_winehuaLastGraphicsResourceViews = "[]";
 
     std::array<DxvkShaderResourceSlot, MaxNumResourceSlots>  m_rc;
     std::array<DxvkGraphicsPipeline*, 4096> m_gpLookupCache = { };
