@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <cstdint>
 
 #include "../util/log/log.h"
 
@@ -33,6 +34,71 @@ namespace dxvk {
       Logger::info("WineHuaRenderPass: " + message);
     else if (index == 1024)
       Logger::info("WineHuaRenderPass: further records suppressed");
+  }
+
+  /* Render-target capture is deliberately separate from the normal sampled
+   * trace. It is enabled for one selected frame only and must never become a
+   * product rendering path. */
+  inline bool winehuaRenderTargetDumpEnabled() {
+    const char* value = std::getenv("WINEHUA_DXVK_DUMP_RT");
+    return value && value[0] == '1';
+  }
+
+  inline uint64_t winehuaRenderTargetDumpFrame() {
+    static uint64_t frame = UINT64_MAX;
+    if (frame == UINT64_MAX) {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_FRAME");
+      char* end = nullptr;
+      frame = value && value[0]
+        ? std::strtoull(value, &end, 10) : 0;
+      if (!end || *end != '\0')
+        frame = 0;
+    }
+    return frame;
+  }
+
+  inline uint32_t winehuaRenderTargetDumpMaxAttachments() {
+    static uint32_t count = UINT32_MAX;
+    if (count == UINT32_MAX) {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_RT_MAX");
+      char* end = nullptr;
+      count = value && value[0]
+        ? uint32_t(std::strtoul(value, &end, 10)) : 12u;
+      if (!end || *end != '\0' || !count)
+        count = 12u;
+    }
+    return count;
+  }
+
+  inline uint32_t winehuaRenderTargetDumpFirstPass() {
+    static uint32_t pass = UINT32_MAX;
+    if (pass == UINT32_MAX) {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_PASS_START");
+      char* end = nullptr;
+      pass = value && value[0]
+        ? uint32_t(std::strtoul(value, &end, 10)) : 0u;
+      if (!end || *end != '\0')
+        pass = 0u;
+    }
+    return pass;
+  }
+
+  inline uint64_t winehuaRenderTargetDumpMaxBytes() {
+    static uint64_t bytes = UINT64_MAX;
+    if (bytes == UINT64_MAX) {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_RT_MAX_BYTES");
+      char* end = nullptr;
+      bytes = value && value[0]
+        ? std::strtoull(value, &end, 10) : (64ull << 20);
+      if (!end || *end != '\0' || !bytes)
+        bytes = 64ull << 20;
+    }
+    return bytes;
+  }
+
+  inline const char* winehuaRenderTargetDumpPath() {
+    const char* value = std::getenv("WINEHUA_DXVK_DUMP_RT_PATH");
+    return value && value[0] ? value : ".";
   }
 
   inline bool winehuaForceSampledGeneral() {

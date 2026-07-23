@@ -303,7 +303,9 @@ namespace dxvk {
       if (i + 1 >= SyncInterval)
         m_context->signal(m_frameLatencySignal, m_frameId);
 
-      SubmitPresent(immediateContext, sync, i);
+      const bool lastPresent = i + 1 >= std::max(SyncInterval, 1u);
+      SubmitPresent(immediateContext, sync, i,
+        lastPresent ? m_frameId + 1 : 0);
     }
 
     SyncFrameLatency();
@@ -314,7 +316,8 @@ namespace dxvk {
   void D3D11SwapChain::SubmitPresent(
           D3D11ImmediateContext*  pContext,
     const vk::PresenterSync&      Sync,
-          uint32_t                FrameId) {
+          uint32_t                FrameId,
+          uint64_t                NextFrameId) {
     auto lock = pContext->LockContext();
 
     // Present from CS thread so that we don't
@@ -323,6 +326,7 @@ namespace dxvk {
 
     pContext->EmitCs([this,
       cFrameId     = FrameId,
+      cNextFrameId = NextFrameId,
       cSync        = Sync,
       cHud         = m_hud,
       cCommandList = m_context->endRecording()
@@ -334,6 +338,9 @@ namespace dxvk {
         cHud->update();
 
       m_device->presentImage(m_presenter, &m_presentStatus);
+
+      if (cNextFrameId)
+        ctx->winehuaFrameBoundary(cNextFrameId);
     });
 
     pContext->FlushCsChunk();

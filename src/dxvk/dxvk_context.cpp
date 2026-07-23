@@ -1,4 +1,7 @@
+#include <algorithm>
 #include <cstring>
+#include <fstream>
+#include <string>
 #include <vector>
 #include <utility>
 
@@ -6,6 +9,7 @@
 #include "dxvk_context.h"
 #include "dxvk_winehua_trace.h"
 #include "../dxbc/dxbc_util.h"
+#include "../util/util_string.h"
 
 namespace dxvk {
 
@@ -105,6 +109,115 @@ namespace dxvk {
     
     this->beginRecording(
       m_device->createCommandList());
+  }
+
+
+  void DxvkContext::winehuaFrameBoundary(uint64_t nextFrameId) {
+    if (winehuaRenderTargetDumpEnabled()) {
+      if (m_winehuaFrameId == winehuaRenderTargetDumpFrame())
+        this->winehuaWriteRenderTargetDumps();
+      else
+        m_winehuaRenderTargetDumps.clear();
+
+      if (nextFrameId == winehuaRenderTargetDumpFrame()) {
+        Logger::info(str::format(
+          "WineHuaRenderTargetDump: armed frame=", nextFrameId,
+          " maxAttachments=", winehuaRenderTargetDumpMaxAttachments(),
+          " maxBytes=", winehuaRenderTargetDumpMaxBytes(),
+          " path=", winehuaRenderTargetDumpPath()));
+      }
+    }
+
+    m_winehuaFrameId = nextFrameId;
+    m_winehuaPassId = 0;
+    m_winehuaActivePassId = 0;
+    m_winehuaDumpBytes = 0;
+  }
+
+
+  void DxvkContext::winehuaWriteRenderTargetDumps() {
+    const std::string basePath = winehuaRenderTargetDumpPath();
+    const std::string frameName = str::format("frame-", m_winehuaFrameId);
+    const std::string metadataPath = str::format(basePath, "/", frameName, ".jsonl");
+    std::ofstream metadata(
+      str::tows(metadataPath.c_str()).c_str(),
+      std::ios_base::binary | std::ios_base::trunc);
+
+    if (!metadata) {
+      Logger::err(str::format(
+        "WineHuaRenderTargetDump: cannot open metadata path=", metadataPath));
+      m_winehuaRenderTargetDumps.clear();
+      return;
+    }
+
+    uint32_t filesWritten = 0;
+    for (auto& dump : m_winehuaRenderTargetDumps) {
+      std::string fileName;
+      bool dataWritten = false;
+
+      if (dump.buffer != nullptr && dump.dataSize) {
+        const auto slice = dump.buffer->getSliceHandle();
+        m_device->waitForResource(dump.buffer, DxvkAccess::Write);
+        dump.buffer->invalidateMappedSlice(slice);
+
+        fileName = str::format(
+          frameName, "-pass-", dump.passId,
+          "-attachment-", dump.attachmentId, ".bin");
+        const std::string dataPath = str::format(basePath, "/", fileName);
+        std::ofstream data(
+          str::tows(dataPath.c_str()).c_str(),
+          std::ios_base::binary | std::ios_base::trunc);
+
+        if (data) {
+          data.write(reinterpret_cast<const char*>(slice.mapPtr), dump.dataSize);
+          dataWritten = data.good();
+          if (dataWritten)
+            filesWritten++;
+        }
+
+        if (!dataWritten) {
+          Logger::err(str::format(
+            "WineHuaRenderTargetDump: cannot write data path=", dataPath));
+        }
+      }
+
+      metadata
+        << "{\"frame\":" << dump.frameId
+        << ",\"pass\":" << dump.passId
+        << ",\"attachment\":" << dump.attachmentId
+        << ",\"kind\":\"" << (dump.colorIndex < 0 ? "depth" : "color") << "\""
+        << ",\"colorIndex\":" << dump.colorIndex
+        << ",\"viewCookie\":" << dump.viewCookie
+        << ",\"imageHandle\":" << uint64_t(dump.imageHandle)
+        << ",\"imageFormat\":" << uint32_t(dump.imageFormat)
+        << ",\"viewFormat\":" << uint32_t(dump.viewFormat)
+        << ",\"aspect\":" << uint32_t(dump.aspect)
+        << ",\"extent\":[" << dump.extent.width << ','
+                              << dump.extent.height << ','
+                              << dump.extent.depth << ']'
+        << ",\"baseMip\":" << dump.baseMip
+        << ",\"baseLayer\":" << dump.baseLayer
+        << ",\"layerCount\":" << dump.layerCount
+        << ",\"layout\":" << uint32_t(dump.layout)
+        << ",\"loadLayout\":" << uint32_t(dump.loadLayout)
+        << ",\"loadOp\":" << uint32_t(dump.loadOp)
+        << ",\"storeLayout\":" << uint32_t(dump.storeLayout)
+        << ",\"rowPitch\":" << dump.rowPitch
+        << ",\"slicePitch\":" << dump.slicePitch
+        << ",\"bytes\":" << dump.dataSize
+        << ",\"vertexShader\":\"" << dump.vertexShader << "\""
+        << ",\"fragmentShader\":\"" << dump.fragmentShader << "\""
+        << ",\"resourceViews\":" << dump.resourceViews
+        << ",\"file\":\"" << (dataWritten ? fileName : "") << "\""
+        << "}\n";
+    }
+
+    Logger::info(str::format(
+      "WineHuaRenderTargetDump: completed frame=", m_winehuaFrameId,
+      " records=", m_winehuaRenderTargetDumps.size(),
+      " files=", filesWritten,
+      " metadata=", metadataPath));
+    m_winehuaRenderTargetDumps.clear();
   }
   
   
@@ -4005,6 +4118,13 @@ namespace dxvk {
 
       m_gfxBarriers.recordCommands(m_cmd);
 
+      if (winehuaRenderTargetDumpEnabled()
+       && m_winehuaFrameId == winehuaRenderTargetDumpFrame()) {
+        this->winehuaCaptureRenderPass(
+          m_state.om.framebufferInfo,
+          m_winehuaActivePassOps);
+      }
+
       this->unbindGraphicsPipeline();
     } else if (!suspend) {
       // We may end a previously suspended render pass
@@ -4042,7 +4162,14 @@ namespace dxvk {
     info.clearValueCount      = clearValueCount;
     info.pClearValues         = clearValues;
 
-    if (winehuaSampleTraceEnabled()) {
+    const bool dumpThisPass = winehuaRenderTargetDumpEnabled()
+      && m_winehuaFrameId == winehuaRenderTargetDumpFrame();
+    if (dumpThisPass) {
+      m_winehuaActivePassId = m_winehuaPassId++;
+      m_winehuaActivePassOps = ops;
+    }
+
+    if (winehuaSampleTraceEnabled() || dumpThisPass) {
       for (uint32_t i = 0; i < framebufferInfo.numAttachments(); i++) {
         const auto& attachment = framebufferInfo.getAttachment(i);
         if (attachment.view == nullptr)
@@ -4053,8 +4180,10 @@ namespace dxvk {
         const auto& viewInfo = attachment.view->info();
         const auto& imageInfo = attachment.view->imageInfo();
 
-        winehuaRenderPassTrace(str::format(
-          "begin size=", fbSize.width, "x", fbSize.height,
+        const std::string message = str::format(
+          "begin frame=", m_winehuaFrameId,
+          " pass=", m_winehuaActivePassId,
+          " size=", fbSize.width, "x", fbSize.height,
           " attachment=", i,
           " kind=", isDepth ? "depth" : "color",
           " colorIndex=", colorIndex,
@@ -4070,7 +4199,12 @@ namespace dxvk {
           " layout=", attachment.layout,
           " loadLayout=", isDepth ? ops.depthOps.loadLayout : ops.colorOps[colorIndex].loadLayout,
           " loadOp=", isDepth ? ops.depthOps.loadOpD : ops.colorOps[colorIndex].loadOp,
-          " storeLayout=", isDepth ? ops.depthOps.storeLayout : ops.colorOps[colorIndex].storeLayout));
+          " storeLayout=", isDepth ? ops.depthOps.storeLayout : ops.colorOps[colorIndex].storeLayout);
+
+        if (winehuaSampleTraceEnabled())
+          winehuaRenderPassTrace(message);
+        if (dumpThisPass)
+          Logger::info("WineHuaRenderTargetPass: " + message);
       }
     }
     
@@ -4090,6 +4224,146 @@ namespace dxvk {
   
   void DxvkContext::renderPassUnbindFramebuffer() {
     m_cmd->cmdEndRenderPass();
+  }
+
+
+  void DxvkContext::winehuaCaptureRenderPass(
+    const DxvkFramebufferInfo&  framebufferInfo,
+    const DxvkRenderPassOps&    ops) {
+    if (m_winehuaActivePassId < winehuaRenderTargetDumpFirstPass())
+      return;
+
+    std::string resourceViews = "[";
+    bool firstResource = true;
+    for (uint32_t i = 0; i < MaxNumResourceSlots; i++) {
+      const auto& view = m_rc[i].imageView;
+      if (view == nullptr)
+        continue;
+
+      if (!firstResource)
+        resourceViews += ',';
+      resourceViews += str::format(
+        "{\"slot\":", i,
+        ",\"viewCookie\":", view->cookie(),
+        ",\"imageHandle\":", uint64_t(view->imageHandle()),
+        ",\"viewFormat\":", uint32_t(view->info().format),
+        ",\"aspect\":", uint32_t(view->info().aspect),
+        ",\"baseMip\":", view->info().minLevel,
+        ",\"baseLayer\":", view->info().minLayer,
+        ",\"layerCount\":", view->info().numLayers,
+        '}');
+      firstResource = false;
+    }
+    resourceViews += ']';
+
+    const std::string vertexShader = m_state.gp.shaders.vs != nullptr
+      ? m_state.gp.shaders.vs->debugName() : std::string();
+    const std::string fragmentShader = m_state.gp.shaders.fs != nullptr
+      ? m_state.gp.shaders.fs->debugName() : std::string();
+
+    for (uint32_t i = 0; i < framebufferInfo.numAttachments(); i++) {
+      if (m_winehuaRenderTargetDumps.size()
+          >= winehuaRenderTargetDumpMaxAttachments()) {
+        Logger::info(str::format(
+          "WineHuaRenderTargetDump: attachment limit reached frame=",
+          m_winehuaFrameId,
+          " pass=", m_winehuaActivePassId));
+        break;
+      }
+
+      const auto& attachment = framebufferInfo.getAttachment(i);
+      if (attachment.view == nullptr)
+        continue;
+
+      const auto& viewInfo = attachment.view->info();
+      const auto& imageInfo = attachment.view->imageInfo();
+      const int32_t colorIndex = framebufferInfo.getColorAttachmentIndex(i);
+      const bool isDepth = colorIndex < 0;
+
+      WineHuaRenderTargetDump dump;
+      dump.frameId = m_winehuaFrameId;
+      dump.passId = m_winehuaActivePassId;
+      dump.attachmentId = i;
+      dump.colorIndex = colorIndex;
+      dump.viewCookie = attachment.view->cookie();
+      dump.imageHandle = attachment.view->imageHandle();
+      dump.imageFormat = imageInfo.format;
+      dump.viewFormat = viewInfo.format;
+      dump.aspect = viewInfo.aspect;
+      dump.layout = attachment.layout;
+      dump.loadLayout = isDepth
+        ? ops.depthOps.loadLayout : ops.colorOps[colorIndex].loadLayout;
+      dump.loadOp = isDepth
+        ? ops.depthOps.loadOpD : ops.colorOps[colorIndex].loadOp;
+      dump.storeLayout = isDepth
+        ? ops.depthOps.storeLayout : ops.colorOps[colorIndex].storeLayout;
+      dump.extent = attachment.view->mipLevelExtent(0);
+      dump.baseMip = viewInfo.minLevel;
+      dump.baseLayer = imageInfo.type == VK_IMAGE_TYPE_3D
+        ? 0u : viewInfo.minLayer;
+      dump.layerCount = imageInfo.type == VK_IMAGE_TYPE_3D
+        ? 1u : std::min(viewInfo.numLayers, 8u);
+      dump.vertexShader = vertexShader;
+      dump.fragmentShader = fragmentShader;
+      dump.resourceViews = resourceViews;
+
+      VkImageAspectFlags copyAspect = viewInfo.aspect;
+      if (copyAspect & VK_IMAGE_ASPECT_COLOR_BIT)
+        copyAspect = VK_IMAGE_ASPECT_COLOR_BIT;
+      else if (copyAspect & VK_IMAGE_ASPECT_DEPTH_BIT)
+        copyAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+      else if (copyAspect & VK_IMAGE_ASPECT_STENCIL_BIT)
+        copyAspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+      dump.aspect = copyAspect;
+
+      const auto formatInfo = attachment.view->formatInfo();
+      const auto blockCount = util::computeBlockCount(
+        dump.extent, formatInfo->blockSize);
+      dump.rowPitch = blockCount.width * formatInfo->elementSize;
+      dump.slicePitch = blockCount.height * dump.rowPitch;
+      dump.dataSize = blockCount.depth * dump.slicePitch * dump.layerCount;
+
+      const bool captureSupported = imageInfo.sampleCount == VK_SAMPLE_COUNT_1_BIT
+        && (imageInfo.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+        && !formatInfo->flags.test(DxvkFormatFlag::MultiPlane)
+        && dump.extent.width && dump.extent.height && dump.dataSize
+        && m_winehuaDumpBytes + dump.dataSize
+            <= winehuaRenderTargetDumpMaxBytes();
+
+      if (captureSupported) {
+        DxvkBufferCreateInfo bufferInfo;
+        bufferInfo.size = dump.dataSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufferInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        bufferInfo.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+        dump.buffer = m_device->createBuffer(bufferInfo,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        VkImageSubresourceLayers subresource;
+        subresource.aspectMask = copyAspect;
+        subresource.mipLevel = dump.baseMip;
+        subresource.baseArrayLayer = dump.baseLayer;
+        subresource.layerCount = dump.layerCount;
+
+        this->copyImageToBuffer(
+          dump.buffer, 0, 0, 0,
+          attachment.view->image(), subresource,
+          VkOffset3D { 0, 0, 0 }, dump.extent);
+        m_winehuaDumpBytes += dump.dataSize;
+      } else {
+        Logger::info(str::format(
+          "WineHuaRenderTargetDump: metadata-only frame=", dump.frameId,
+          " pass=", dump.passId,
+          " attachment=", dump.attachmentId,
+          " samples=", imageInfo.sampleCount,
+          " usage=0x", std::hex, imageInfo.usage,
+          " bytes=", std::dec, dump.dataSize));
+      }
+
+      m_winehuaRenderTargetDumps.push_back(std::move(dump));
+    }
   }
   
   

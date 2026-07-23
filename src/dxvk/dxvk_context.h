@@ -1,5 +1,8 @@
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include "dxvk_barrier.h"
 #include "dxvk_bind_mask.h"
 #include "dxvk_cmdlist.h"
@@ -56,6 +59,16 @@ namespace dxvk {
      * buffer and allocates a new one.
      */
     void flushCommandList();
+
+    /**
+     * \brief Marks a WineHua frame boundary
+     *
+     * Used only by the opt-in render-target capture path. The marker is
+     * inserted into the D3D11 CS stream after Present so subsequent render
+     * passes have an unambiguous frame number.
+     */
+    void winehuaFrameBoundary(
+            uint64_t              nextFrameId);
     
     /**
      * \brief Begins generating query data
@@ -1050,6 +1063,33 @@ namespace dxvk {
     }
 
   private:
+
+    struct WineHuaRenderTargetDump {
+      uint64_t                frameId       = 0;
+      uint32_t                passId        = 0;
+      uint32_t                attachmentId  = 0;
+      int32_t                 colorIndex    = -1;
+      uint64_t                viewCookie    = 0;
+      VkImage                 imageHandle   = VK_NULL_HANDLE;
+      VkFormat                imageFormat   = VK_FORMAT_UNDEFINED;
+      VkFormat                viewFormat    = VK_FORMAT_UNDEFINED;
+      VkImageAspectFlags      aspect        = 0;
+      VkImageLayout           layout        = VK_IMAGE_LAYOUT_UNDEFINED;
+      VkImageLayout           loadLayout    = VK_IMAGE_LAYOUT_UNDEFINED;
+      VkImageLayout           storeLayout   = VK_IMAGE_LAYOUT_UNDEFINED;
+      VkAttachmentLoadOp      loadOp        = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      VkExtent3D              extent        = { 0, 0, 0 };
+      uint32_t                baseMip       = 0;
+      uint32_t                baseLayer     = 0;
+      uint32_t                layerCount    = 0;
+      VkDeviceSize            rowPitch      = 0;
+      VkDeviceSize            slicePitch    = 0;
+      VkDeviceSize            dataSize      = 0;
+      std::string             vertexShader;
+      std::string             fragmentShader;
+      std::string             resourceViews;
+      Rc<DxvkBuffer>          buffer;
+    };
     
     Rc<DxvkDevice>          m_device;
     DxvkObjects*            m_common;
@@ -1085,6 +1125,13 @@ namespace dxvk {
     DxvkBindingSet<MaxNumResourceSlots>       m_rcTracked;
 
     std::vector<DxvkDeferredClear> m_deferredClears;
+    std::vector<WineHuaRenderTargetDump> m_winehuaRenderTargetDumps;
+
+    uint64_t m_winehuaFrameId = 0;
+    uint64_t m_winehuaDumpBytes = 0;
+    uint32_t m_winehuaPassId = 0;
+    uint32_t m_winehuaActivePassId = 0;
+    DxvkRenderPassOps m_winehuaActivePassOps = { };
 
     std::array<DxvkShaderResourceSlot, MaxNumResourceSlots>  m_rc;
     std::array<DxvkGraphicsPipeline*, 4096> m_gpLookupCache = { };
@@ -1216,6 +1263,12 @@ namespace dxvk {
       const VkClearValue*         clearValues);
     
     void renderPassUnbindFramebuffer();
+
+    void winehuaCaptureRenderPass(
+      const DxvkFramebufferInfo&  framebufferInfo,
+      const DxvkRenderPassOps&    ops);
+
+    void winehuaWriteRenderTargetDumps();
     
     void resetRenderPassOps(
       const DxvkRenderTargets&    renderTargets,
