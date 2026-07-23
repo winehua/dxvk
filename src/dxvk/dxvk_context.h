@@ -1165,7 +1165,9 @@ namespace dxvk {
     uint32_t m_winehuaActivePassId = 0;
     uint32_t m_winehuaFrameDrawId = 0;
     uint32_t m_winehuaPassDrawId = 0;
+    uint32_t m_winehuaLastPassDrawId = UINT32_MAX;
     uint32_t m_winehuaTraceDrawsEmitted = 0;
+    bool m_winehuaTargetDrawCaptured = false;
     DxvkRenderPassOps m_winehuaActivePassOps = { };
     std::string m_winehuaLastGraphicsResourceViews = "[]";
 
@@ -1313,6 +1315,8 @@ namespace dxvk {
     void winehuaTraceDraw(
       const char*         drawType,
       const std::string&  arguments);
+
+    void winehuaCaptureTargetDraw();
     
     void resetRenderPassOps(
       const DxvkRenderTargets&    renderTargets,

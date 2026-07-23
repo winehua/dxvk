@@ -94,6 +94,27 @@ namespace dxvk {
     return count;
   }
 
+  inline uint32_t winehuaRenderTargetDumpDraw() {
+    static uint32_t draw = UINT32_MAX;
+    static bool initialized = false;
+    if (!initialized) {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_DRAW");
+      char* end = nullptr;
+      if (value && value[0]) {
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        draw = end && *end == '\0' ? uint32_t(parsed) : UINT32_MAX;
+      }
+      initialized = true;
+    }
+    return draw;
+  }
+
+  inline bool winehuaTargetDrawCaptureEnabled() {
+    return winehuaDrawTraceEnabled()
+        && winehuaRenderTargetDumpEnabled()
+        && winehuaRenderTargetDumpDraw() != UINT32_MAX;
+  }
+
   inline uint32_t winehuaRenderTargetDumpMaxAttachments() {
     static uint32_t count = UINT32_MAX;
     if (count == UINT32_MAX) {

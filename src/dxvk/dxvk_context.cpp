@@ -141,7 +141,9 @@ namespace dxvk {
     m_winehuaActivePassId = 0;
     m_winehuaFrameDrawId = 0;
     m_winehuaPassDrawId = 0;
+    m_winehuaLastPassDrawId = UINT32_MAX;
     m_winehuaTraceDrawsEmitted = 0;
+    m_winehuaTargetDrawCaptured = false;
     m_winehuaDumpBytes = 0;
     m_winehuaLastGraphicsResourceViews = "[]";
     m_winehuaLastGraphicsImages.clear();
@@ -157,6 +159,7 @@ namespace dxvk {
 
     const uint32_t frameDrawId = m_winehuaFrameDrawId++;
     const uint32_t passDrawId = m_winehuaPassDrawId++;
+    m_winehuaLastPassDrawId = passDrawId;
     const uint32_t selectedPass = winehuaDrawTracePass();
 
     if ((selectedPass != UINT32_MAX && m_winehuaActivePassId != selectedPass)
@@ -376,6 +379,27 @@ namespace dxvk {
           " texelBuffer=0x", binding.texelBuffer));
       }
     }
+  }
+
+
+  void DxvkContext::winehuaCaptureTargetDraw() {
+    if (!winehuaTargetDrawCaptureEnabled()
+     || m_winehuaTargetDrawCaptured
+     || m_winehuaFrameId != winehuaRenderTargetDumpFrame()
+     || m_winehuaLastPassDrawId != winehuaRenderTargetDumpDraw())
+      return;
+
+    const uint32_t selectedPass = winehuaDrawTracePass();
+    if (selectedPass != UINT32_MAX && m_winehuaActivePassId != selectedPass)
+      return;
+
+    m_winehuaTargetDrawCaptured = true;
+    Logger::info(str::format(
+      "WineHuaDrawCapture: frame=", m_winehuaFrameId,
+      " pass=", m_winehuaActivePassId,
+      " draw=", m_winehuaLastPassDrawId,
+      " ending render pass for diagnostic capture"));
+    this->spillRenderPass(false);
   }
 
 
@@ -1823,6 +1847,8 @@ namespace dxvk {
       m_cmd->cmdDraw(
         vertexCount, instanceCount,
         firstVertex, firstInstance);
+      if (unlikely(winehuaTargetDrawCaptureEnabled()))
+        this->winehuaCaptureTargetDraw();
     }
     
     m_cmd->addStatCtr(DxvkStatCounter::CmdDrawCalls, 1);
@@ -1847,6 +1873,8 @@ namespace dxvk {
         descriptor.buffer.buffer,
         descriptor.buffer.offset + offset,
         count, stride);
+      if (unlikely(winehuaTargetDrawCaptureEnabled()))
+        this->winehuaCaptureTargetDraw();
     }
     
     m_cmd->addStatCtr(DxvkStatCounter::CmdDrawCalls, 1);
@@ -1877,6 +1905,8 @@ namespace dxvk {
         cntDescriptor.buffer.buffer,
         cntDescriptor.buffer.offset + countOffset,
         maxCount, stride);
+      if (unlikely(winehuaTargetDrawCaptureEnabled()))
+        this->winehuaCaptureTargetDraw();
     }
     
     m_cmd->addStatCtr(DxvkStatCounter::CmdDrawCalls, 1);
@@ -1905,6 +1935,8 @@ namespace dxvk {
         indexCount, instanceCount,
         firstIndex, vertexOffset,
         firstInstance);
+      if (unlikely(winehuaTargetDrawCaptureEnabled()))
+        this->winehuaCaptureTargetDraw();
     }
     
     m_cmd->addStatCtr(DxvkStatCounter::CmdDrawCalls, 1);
@@ -1929,6 +1961,8 @@ namespace dxvk {
         descriptor.buffer.buffer,
         descriptor.buffer.offset + offset,
         count, stride);
+      if (unlikely(winehuaTargetDrawCaptureEnabled()))
+        this->winehuaCaptureTargetDraw();
     }
     
     m_cmd->addStatCtr(DxvkStatCounter::CmdDrawCalls, 1);
@@ -1959,6 +1993,8 @@ namespace dxvk {
         cntDescriptor.buffer.buffer,
         cntDescriptor.buffer.offset + countOffset,
         maxCount, stride);
+      if (unlikely(winehuaTargetDrawCaptureEnabled()))
+        this->winehuaCaptureTargetDraw();
     }
     
     m_cmd->addStatCtr(DxvkStatCounter::CmdDrawCalls, 1);
@@ -1984,6 +2020,8 @@ namespace dxvk {
         physSlice.offset,
         counterBias,
         counterDivisor);
+      if (unlikely(winehuaTargetDrawCaptureEnabled()))
+        this->winehuaCaptureTargetDraw();
     }
 
     m_cmd->addStatCtr(DxvkStatCounter::CmdDrawCalls, 1);
