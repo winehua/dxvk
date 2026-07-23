@@ -1065,10 +1065,13 @@ namespace dxvk {
   private:
 
     struct WineHuaRenderTargetDump {
+      std::string             kind          = "color";
       uint64_t                frameId       = 0;
       uint32_t                passId        = 0;
       uint32_t                attachmentId  = 0;
       int32_t                 colorIndex    = -1;
+      int32_t                 descriptorBinding = -1;
+      uint32_t                resourceSlot  = 0;
       uint64_t                viewCookie    = 0;
       VkImage                 imageHandle   = VK_NULL_HANDLE;
       VkFormat                imageFormat   = VK_FORMAT_UNDEFINED;
@@ -1091,6 +1094,13 @@ namespace dxvk {
       std::string             fragmentShader;
       std::string             resourceViews;
       Rc<DxvkBuffer>          buffer;
+    };
+
+    struct WineHuaGraphicsResourceDump {
+      uint32_t                binding       = 0;
+      uint32_t                resourceSlot  = 0;
+      VkDescriptorType        descriptorType = VK_DESCRIPTOR_TYPE_MAX_ENUM;
+      Rc<DxvkImageView>       view;
     };
     
     Rc<DxvkDevice>          m_device;
@@ -1128,6 +1138,7 @@ namespace dxvk {
 
     std::vector<DxvkDeferredClear> m_deferredClears;
     std::vector<WineHuaRenderTargetDump> m_winehuaRenderTargetDumps;
+    std::vector<WineHuaGraphicsResourceDump> m_winehuaLastGraphicsImages;
 
     uint64_t m_winehuaFrameId = 0;
     uint64_t m_winehuaDumpBytes = 0;
@@ -1270,6 +1281,10 @@ namespace dxvk {
     void winehuaCaptureRenderPass(
       const DxvkFramebufferInfo&  framebufferInfo,
       const DxvkRenderPassOps&    ops);
+
+    void winehuaCaptureImageView(
+            WineHuaRenderTargetDump dump,
+      const Rc<DxvkImageView>&      view);
 
     void winehuaWriteRenderTargetDumps();
     

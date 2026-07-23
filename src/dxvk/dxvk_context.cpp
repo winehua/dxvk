@@ -133,6 +133,7 @@ namespace dxvk {
     m_winehuaActivePassId = 0;
     m_winehuaDumpBytes = 0;
     m_winehuaLastGraphicsResourceViews = "[]";
+    m_winehuaLastGraphicsImages.clear();
   }
 
 
@@ -163,7 +164,7 @@ namespace dxvk {
 
         fileName = str::format(
           frameName, "-pass-", dump.passId,
-          "-attachment-", dump.attachmentId, ".bin");
+          "-", dump.kind, "-", dump.attachmentId, ".bin");
         const std::string dataPath = str::format(basePath, "/", fileName);
         std::ofstream data(
           str::tows(dataPath.c_str()).c_str(),
@@ -186,8 +187,10 @@ namespace dxvk {
         << "{\"frame\":" << dump.frameId
         << ",\"pass\":" << dump.passId
         << ",\"attachment\":" << dump.attachmentId
-        << ",\"kind\":\"" << (dump.colorIndex < 0 ? "depth" : "color") << "\""
+        << ",\"kind\":\"" << dump.kind << "\""
         << ",\"colorIndex\":" << dump.colorIndex
+        << ",\"descriptorBinding\":" << dump.descriptorBinding
+        << ",\"resourceSlot\":" << dump.resourceSlot
         << ",\"viewCookie\":" << dump.viewCookie
         << ",\"imageHandle\":" << uint64_t(dump.imageHandle)
         << ",\"imageFormat\":" << uint32_t(dump.imageFormat)
@@ -4271,6 +4274,7 @@ namespace dxvk {
       const bool isDepth = colorIndex < 0;
 
       WineHuaRenderTargetDump dump;
+      dump.kind = isDepth ? "depth" : "color";
       dump.frameId = m_winehuaFrameId;
       dump.passId = m_winehuaActivePassId;
       dump.attachmentId = i;
@@ -4356,6 +4360,103 @@ namespace dxvk {
 
       m_winehuaRenderTargetDumps.push_back(std::move(dump));
     }
+
+    for (const auto& resource : m_winehuaLastGraphicsImages) {
+      bool duplicate = false;
+      for (const auto& existing : m_winehuaRenderTargetDumps) {
+        duplicate |= existing.passId == m_winehuaActivePassId
+                  && existing.viewCookie == resource.view->cookie();
+      }
+      if (duplicate)
+        continue;
+
+      WineHuaRenderTargetDump dump;
+      dump.kind = "sampled";
+      dump.frameId = m_winehuaFrameId;
+      dump.passId = m_winehuaActivePassId;
+      dump.attachmentId = resource.binding;
+      dump.colorIndex = -2;
+      dump.descriptorBinding = resource.binding;
+      dump.resourceSlot = resource.resourceSlot;
+      dump.layout = resource.view->imageInfo().layout;
+      dump.viewport = m_state.vp.viewports[0];
+      dump.scissor = m_state.vp.scissorRects[0];
+      dump.vertexShader = vertexShader;
+      dump.fragmentShader = fragmentShader;
+      dump.resourceViews = resourceViews;
+      this->winehuaCaptureImageView(std::move(dump), resource.view);
+    }
+  }
+
+
+  void DxvkContext::winehuaCaptureImageView(
+          WineHuaRenderTargetDump dump,
+    const Rc<DxvkImageView>&      view) {
+    if (m_winehuaRenderTargetDumps.size()
+        >= winehuaRenderTargetDumpMaxAttachments())
+      return;
+
+    const auto& viewInfo = view->info();
+    const auto& imageInfo = view->imageInfo();
+    dump.viewCookie = view->cookie();
+    dump.imageHandle = view->imageHandle();
+    dump.imageFormat = imageInfo.format;
+    dump.viewFormat = viewInfo.format;
+    dump.extent = view->mipLevelExtent(0);
+    dump.baseMip = viewInfo.minLevel;
+    dump.baseLayer = imageInfo.type == VK_IMAGE_TYPE_3D
+      ? 0u : viewInfo.minLayer;
+    dump.layerCount = imageInfo.type == VK_IMAGE_TYPE_3D
+      ? 1u : std::min(viewInfo.numLayers, 8u);
+
+    VkImageAspectFlags copyAspect = viewInfo.aspect;
+    if (copyAspect & VK_IMAGE_ASPECT_COLOR_BIT)
+      copyAspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    else if (copyAspect & VK_IMAGE_ASPECT_DEPTH_BIT)
+      copyAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+    else if (copyAspect & VK_IMAGE_ASPECT_STENCIL_BIT)
+      copyAspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+    dump.aspect = copyAspect;
+
+    const auto formatInfo = view->formatInfo();
+    const auto blockCount = util::computeBlockCount(
+      dump.extent, formatInfo->blockSize);
+    dump.rowPitch = blockCount.width * formatInfo->elementSize;
+    dump.slicePitch = blockCount.height * dump.rowPitch;
+    dump.dataSize = blockCount.depth * dump.slicePitch * dump.layerCount;
+
+    const bool captureSupported = imageInfo.sampleCount == VK_SAMPLE_COUNT_1_BIT
+      && (imageInfo.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+      && !formatInfo->flags.test(DxvkFormatFlag::MultiPlane)
+      && dump.extent.width && dump.extent.height && dump.dataSize
+      && m_winehuaDumpBytes + dump.dataSize
+          <= winehuaRenderTargetDumpMaxBytes();
+
+    if (captureSupported) {
+      DxvkBufferCreateInfo bufferInfo;
+      bufferInfo.size = dump.dataSize;
+      bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      bufferInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+      bufferInfo.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+      dump.buffer = m_device->createBuffer(bufferInfo,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+      | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+      VkImageSubresourceLayers subresource;
+      subresource.aspectMask = copyAspect;
+      subresource.mipLevel = dump.baseMip;
+      subresource.baseArrayLayer = dump.baseLayer;
+      subresource.layerCount = dump.layerCount;
+
+      this->copyImageToBuffer(
+        dump.buffer, 0, 0, 0,
+        view->image(), subresource,
+        VkOffset3D { 0, 0, 0 }, dump.extent);
+      m_winehuaDumpBytes += dump.dataSize;
+    }
+
+    m_winehuaRenderTargetDumps.push_back(std::move(dump));
   }
   
   
@@ -4879,11 +4980,15 @@ namespace dxvk {
        && m_winehuaFrameId == winehuaRenderTargetDumpFrame()) {
         std::string resourceViews = "[";
         bool firstResource = true;
+        m_winehuaLastGraphicsImages.clear();
         for (uint32_t i = 0; i < layout->bindingCount(); i++) {
           const auto& binding = layout->binding(i);
           const auto& view = m_rc[binding.slot].imageView;
           if (view == nullptr)
             continue;
+
+          m_winehuaLastGraphicsImages.push_back(WineHuaGraphicsResourceDump {
+            i, binding.slot, binding.type, view });
 
           if (!firstResource)
             resourceViews += ',';
