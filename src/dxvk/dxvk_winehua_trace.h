@@ -109,10 +109,57 @@ namespace dxvk {
     return draw;
   }
 
+  inline const char* winehuaRenderTargetDumpFragmentShader() {
+    const char* value = std::getenv("WINEHUA_DXVK_DUMP_FS");
+    return value && value[0] ? value : "";
+  }
+
+  inline uint64_t winehuaRenderTargetDumpIndexCount() {
+    static uint64_t count = UINT64_MAX;
+    if (count == UINT64_MAX) {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_INDEX_COUNT");
+      char* end = nullptr;
+      if (value && value[0]) {
+        const unsigned long long parsed = std::strtoull(value, &end, 10);
+        count = end && *end == '\0' ? parsed : UINT64_MAX;
+      }
+    }
+    return count;
+  }
+
+  inline uint64_t winehuaRenderTargetDumpFirstIndex() {
+    static uint64_t first = UINT64_MAX;
+    if (first == UINT64_MAX) {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_FIRST_INDEX");
+      char* end = nullptr;
+      if (value && value[0]) {
+        const unsigned long long parsed = std::strtoull(value, &end, 10);
+        first = end && *end == '\0' ? parsed : UINT64_MAX;
+      }
+    }
+    return first;
+  }
+
+  inline int64_t winehuaRenderTargetDumpVertexOffset() {
+    static int64_t offset = INT64_MIN;
+    static bool initialized = false;
+    if (!initialized) {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_VERTEX_OFFSET");
+      char* end = nullptr;
+      if (value && value[0]) {
+        const long long parsed = std::strtoll(value, &end, 10);
+        offset = end && *end == '\0' ? parsed : INT64_MIN;
+      }
+      initialized = true;
+    }
+    return offset;
+  }
+
   inline bool winehuaTargetDrawCaptureEnabled() {
     return winehuaDrawTraceEnabled()
         && winehuaRenderTargetDumpEnabled()
-        && winehuaRenderTargetDumpDraw() != UINT32_MAX;
+        && (winehuaRenderTargetDumpDraw() != UINT32_MAX
+         || winehuaRenderTargetDumpFragmentShader()[0]);
   }
 
   inline uint32_t winehuaRenderTargetDumpMaxAttachments() {
@@ -150,6 +197,19 @@ namespace dxvk {
         ? std::strtoull(value, &end, 10) : (64ull << 20);
       if (!end || *end != '\0' || !bytes)
         bytes = 64ull << 20;
+    }
+    return bytes;
+  }
+
+  inline uint64_t winehuaGeometryDumpMaxBytes() {
+    static uint64_t bytes = UINT64_MAX;
+    if (bytes == UINT64_MAX) {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_GEOMETRY_MAX_BYTES");
+      char* end = nullptr;
+      bytes = value && value[0]
+        ? std::strtoull(value, &end, 10) : (32ull << 20);
+      if (!end || *end != '\0' || !bytes)
+        bytes = 32ull << 20;
     }
     return bytes;
   }
