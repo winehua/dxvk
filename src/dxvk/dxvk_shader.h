@@ -91,6 +91,7 @@ namespace dxvk {
    */
   struct DxvkShaderModuleCreateInfo {
     bool      fsDualSrcBlend  = false;
+    bool      fsSecondaryOutput = false;
     bool      freezeBoolSpec  = false;
     const DxvkBindingMask* boolSpecMask = nullptr;
     uint32_t  boolSpecCount   = 0;
@@ -222,6 +223,7 @@ namespace dxvk {
     DxvkShaderKey                 m_key;
     size_t                        m_hash = 0;
 
+    size_t                        m_o0LocOffset = 0;
     size_t                        m_o1IdxOffset = 0;
     size_t                        m_o1LocOffset = 0;
 
@@ -271,6 +273,10 @@ namespace dxvk {
       stage.pSpecializationInfo = specInfo;
       return stage;
     }
+
+    const std::string& winehuaVariantId() const {
+      return m_winehuaVariantId;
+    }
     
     /**
      * \brief Checks whether module is valid
@@ -284,6 +290,7 @@ namespace dxvk {
     
     Rc<vk::DeviceFn>                m_vkd;
     VkPipelineShaderStageCreateInfo m_stage;
+    std::string                     m_winehuaVariantId;
     
   };
   

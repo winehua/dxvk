@@ -68,20 +68,28 @@ namespace dxvk {
       return m_sampler;
     }
 
+    const VkSamplerCreateInfo& info() const {
+      return m_info;
+    }
+
+    const VkClearColorValue& customBorderColor() const {
+      return m_customBorderColor;
+    }
+
     VkBool32 compareToDepth() const {
-      return m_compareToDepth;
+      return m_info.compareEnable;
     }
 
     VkCompareOp compareOp() const {
-      return m_compareOp;
+      return m_info.compareOp;
     }
     
   private:
     
     Rc<vk::DeviceFn>      m_vkd;
     VkSampler             m_sampler = VK_NULL_HANDLE;
-    VkBool32              m_compareToDepth = VK_FALSE;
-    VkCompareOp           m_compareOp = VK_COMPARE_OP_NEVER;
+    VkSamplerCreateInfo   m_info = { };
+    VkClearColorValue     m_customBorderColor = { };
 
     static VkBorderColor getBorderColor(
       const Rc<DxvkDevice>&         device,

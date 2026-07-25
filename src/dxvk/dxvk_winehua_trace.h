@@ -1,12 +1,45 @@
 #pragma once
 
 #include <atomic>
+#include <cstring>
 #include <cstdlib>
 #include <cstdint>
 
 #include "../util/log/log.h"
 
 namespace dxvk {
+
+  enum class WineHuaDualSrcMode {
+    TwoPass,
+    SecondaryReplace,
+    SecondaryMultiply,
+    PrimaryReplace,
+    PrimaryAdd,
+  };
+
+  inline WineHuaDualSrcMode winehuaDualSrcMode() {
+    const char* value = std::getenv("DXVK_WINEHUA_DUAL_SRC_MODE");
+
+    if (value && !std::strcmp(value, "secondary-replace"))
+      return WineHuaDualSrcMode::SecondaryReplace;
+    if (value && !std::strcmp(value, "secondary-multiply"))
+      return WineHuaDualSrcMode::SecondaryMultiply;
+    if (value && !std::strcmp(value, "primary-replace"))
+      return WineHuaDualSrcMode::PrimaryReplace;
+    if (value && !std::strcmp(value, "primary-add"))
+      return WineHuaDualSrcMode::PrimaryAdd;
+    return WineHuaDualSrcMode::TwoPass;
+  }
+
+  inline const char* winehuaDualSrcModeName(WineHuaDualSrcMode mode) {
+    switch (mode) {
+      case WineHuaDualSrcMode::SecondaryReplace:  return "secondary-replace";
+      case WineHuaDualSrcMode::SecondaryMultiply: return "secondary-multiply";
+      case WineHuaDualSrcMode::PrimaryReplace:    return "primary-replace";
+      case WineHuaDualSrcMode::PrimaryAdd:        return "primary-add";
+      default:                                    return "two-pass";
+    }
+  }
 
   /* Narrow, opt-in diagnostics for the WineHua sampled-image investigation.
    * The normal DXVK runtime never emits these records. */
@@ -71,6 +104,21 @@ namespace dxvk {
     static bool initialized = false;
     if (!initialized) {
       const char* value = std::getenv("WINEHUA_DXVK_TRACE_PASS");
+      char* end = nullptr;
+      if (value && value[0]) {
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        pass = end && *end == '\0' ? uint32_t(parsed) : UINT32_MAX;
+      }
+      initialized = true;
+    }
+    return pass;
+  }
+
+  inline uint32_t winehuaDrawTraceSecondPass() {
+    static uint32_t pass = UINT32_MAX;
+    static bool initialized = false;
+    if (!initialized) {
+      const char* value = std::getenv("WINEHUA_DXVK_TRACE_PASS_SECOND");
       char* end = nullptr;
       if (value && value[0]) {
         const unsigned long parsed = std::strtoul(value, &end, 10);
@@ -175,6 +223,11 @@ namespace dxvk {
     return count;
   }
 
+  inline bool winehuaRenderTargetDumpSampledEnabled() {
+    const char* value = std::getenv("WINEHUA_DXVK_DUMP_SAMPLED");
+    return !value || value[0] != '0';
+  }
+
   inline uint32_t winehuaRenderTargetDumpFirstPass() {
     static uint32_t pass = UINT32_MAX;
     if (pass == UINT32_MAX) {
@@ -272,6 +325,12 @@ namespace dxvk {
 
   inline bool winehuaPreciseShadowEnabled() {
     const char* value = std::getenv("DXVK_WINEHUA_PRECISE_SHADOW");
+    return value && value[0] == '1';
+  }
+
+  inline bool winehuaForceHeavenPass2DepthAlways() {
+    const char* value = std::getenv(
+      "WINEHUA_DXVK_FORCE_HEAVEN_PASS2_DEPTH_ALWAYS");
     return value && value[0] == '1';
   }
 

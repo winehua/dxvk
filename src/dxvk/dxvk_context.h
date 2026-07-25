@@ -1197,8 +1197,10 @@ namespace dxvk {
     uint32_t m_winehuaLastPassDrawId = UINT32_MAX;
     uint32_t m_winehuaTraceDrawsEmitted = 0;
     bool m_winehuaTargetDrawCaptured = false;
+    bool m_winehuaSecondTargetDrawCaptured = false;
     DxvkRenderPassOps m_winehuaActivePassOps = { };
     std::string m_winehuaLastGraphicsResourceViews = "[]";
+    std::string m_winehuaGeometryStateJson;
 
     std::array<DxvkShaderResourceSlot, MaxNumResourceSlots>  m_rc;
     std::array<DxvkGraphicsPipeline*, 4096> m_gpLookupCache = { };

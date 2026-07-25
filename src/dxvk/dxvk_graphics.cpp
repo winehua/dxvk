@@ -65,8 +65,10 @@ namespace dxvk {
 
   VkPipeline DxvkGraphicsPipeline::getPipelineHandle(
     const DxvkGraphicsPipelineStateInfo& state,
-    const DxvkRenderPass*                renderPass) {
-    DxvkGraphicsPipelineInstance* instance = this->findInstance(state, renderPass);
+    const DxvkRenderPass*                renderPass,
+          bool                           secondaryOutput) {
+    DxvkGraphicsPipelineInstance* instance = this->findInstance(
+      state, renderPass, secondaryOutput);
 
     if (unlikely(!instance)) {
       // Exit early if the state vector is invalid
@@ -75,13 +77,14 @@ namespace dxvk {
 
       // Prevent other threads from adding new instances and check again
       std::lock_guard<dxvk::mutex> lock(m_mutex);
-      instance = this->findInstance(state, renderPass);
+      instance = this->findInstance(state, renderPass, secondaryOutput);
 
       if (!instance) {
         // Keep pipeline object locked, at worst we're going to stall
         // a state cache worker and the current thread needs priority.
-        instance = this->createInstance(state, renderPass);
-        this->writePipelineStateToCache(state, renderPass->format());
+        instance = this->createInstance(state, renderPass, secondaryOutput);
+        if (!secondaryOutput)
+          this->writePipelineStateToCache(state, renderPass->format());
       }
     }
 
@@ -100,26 +103,30 @@ namespace dxvk {
     // similar pipelines concurrently is fragile on some drivers
     std::lock_guard<dxvk::mutex> lock(m_mutex);
 
-    if (!this->findInstance(state, renderPass))
+    if (!this->findInstance(state, renderPass, false))
       this->createInstance(state, renderPass);
   }
 
 
   DxvkGraphicsPipelineInstance* DxvkGraphicsPipeline::createInstance(
     const DxvkGraphicsPipelineStateInfo& state,
-    const DxvkRenderPass*                renderPass) {
-    VkPipeline pipeline = this->createPipeline(state, renderPass);
+    const DxvkRenderPass*                renderPass,
+          bool                           secondaryOutput) {
+    VkPipeline pipeline = this->createPipeline(
+      state, renderPass, secondaryOutput);
 
     m_pipeMgr->m_numGraphicsPipelines += 1;
-    return &(*m_pipelines.emplace(state, renderPass, pipeline));
+    return &(*m_pipelines.emplace(
+      state, renderPass, pipeline, secondaryOutput));
   }
   
   
   DxvkGraphicsPipelineInstance* DxvkGraphicsPipeline::findInstance(
     const DxvkGraphicsPipelineStateInfo& state,
-    const DxvkRenderPass*                renderPass) {
+    const DxvkRenderPass*                renderPass,
+          bool                           secondaryOutput) {
     for (auto& instance : m_pipelines) {
-      if (instance.isCompatible(state, renderPass))
+      if (instance.isCompatible(state, renderPass, secondaryOutput))
         return &instance;
     }
     
@@ -129,7 +136,8 @@ namespace dxvk {
   
   VkPipeline DxvkGraphicsPipeline::createPipeline(
     const DxvkGraphicsPipelineStateInfo& state,
-    const DxvkRenderPass*                renderPass) const {
+    const DxvkRenderPass*                renderPass,
+          bool                           secondaryOutput) const {
     if (Logger::logLevel() <= LogLevel::Debug) {
       Logger::debug("Compiling graphics pipeline...");
       this->logPipelineState(LogLevel::Debug, state);
@@ -187,11 +195,11 @@ namespace dxvk {
     
     winehuaFlowTrace("graphics-pipeline begin");
 
-    auto vsm  = createShaderModule(m_shaders.vs,  state);
-    auto tcsm = createShaderModule(m_shaders.tcs, state);
-    auto tesm = createShaderModule(m_shaders.tes, state);
-    auto gsm  = createShaderModule(m_shaders.gs,  state);
-    auto fsm  = createShaderModule(m_shaders.fs,  state);
+    auto vsm  = createShaderModule(m_shaders.vs,  state, false);
+    auto tcsm = createShaderModule(m_shaders.tcs, state, false);
+    auto tesm = createShaderModule(m_shaders.tes, state, false);
+    auto gsm  = createShaderModule(m_shaders.gs,  state, false);
+    auto fsm  = createShaderModule(m_shaders.fs,  state, secondaryOutput);
 
     std::vector<VkPipelineShaderStageCreateInfo> stages;
     if (vsm)  stages.push_back(vsm.stageInfo(&specInfo));
@@ -377,6 +385,26 @@ namespace dxvk {
     dsInfo.back                   = state.dsBack.state();
     dsInfo.minDepthBounds         = 0.0f;
     dsInfo.maxDepthBounds         = 1.0f;
+
+    const bool forceHeavenPass2DepthAlways =
+      winehuaForceHeavenPass2DepthAlways()
+      && dsInfo.depthTestEnable
+      && passFormat.color[0].format == VK_FORMAT_R16G16B16A16_SFLOAT
+      && passFormat.color[1].format == VK_FORMAT_UNDEFINED
+      && passFormat.depth.format == VK_FORMAT_D24_UNORM_S8_UINT
+      && m_shaders.vs != nullptr
+      && m_shaders.fs != nullptr;
+
+    if (forceHeavenPass2DepthAlways) {
+      Logger::info(str::format(
+        "WineHuaHeavenDepthAB: forcing compare ALWAYS vs=",
+        m_shaders.vs->debugName(), " fs=", m_shaders.fs->debugName(),
+        " colorFormat=", uint32_t(passFormat.color[0].format),
+        " depthFormat=", uint32_t(passFormat.depth.format),
+        " originalCompare=", uint32_t(dsInfo.depthCompareOp),
+        " depthWrite=", uint32_t(dsInfo.depthWriteEnable)));
+      dsInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+    }
     
     VkPipelineColorBlendStateCreateInfo cbInfo;
     cbInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -439,6 +467,16 @@ namespace dxvk {
     }
 
     winehuaFlowTrace("graphics-pipeline vkCreate end");
+
+    if (!vsm.winehuaVariantId().empty() || !fsm.winehuaVariantId().empty()) {
+      Logger::info(str::format(
+        "WineHuaPipelineVariant: pipeline=0x", std::hex, pipeline,
+        " vs=", vsm.winehuaVariantId(),
+        " tcs=", tcsm.winehuaVariantId(),
+        " tes=", tesm.winehuaVariantId(),
+        " gs=", gsm.winehuaVariantId(),
+        " fs=", fsm.winehuaVariantId()));
+    }
     
     if (Logger::logLevel() <= LogLevel::Debug) {
       t1 = dxvk::high_resolution_clock::now();
@@ -457,7 +495,8 @@ namespace dxvk {
 
   DxvkShaderModule DxvkGraphicsPipeline::createShaderModule(
     const Rc<DxvkShader>&                shader,
-    const DxvkGraphicsPipelineStateInfo& state) const {
+    const DxvkGraphicsPipelineStateInfo& state,
+          bool                           secondaryOutput) const {
     if (shader == nullptr)
       return DxvkShaderModule();
 
@@ -469,7 +508,9 @@ namespace dxvk {
 
     // Fix up fragment shader outputs for dual-source blending
     if (shaderInfo.stage == VK_SHADER_STAGE_FRAGMENT_BIT) {
-      info.fsDualSrcBlend = state.omBlend[0].blendEnable() && (
+      info.fsSecondaryOutput = secondaryOutput;
+      info.fsDualSrcBlend = !secondaryOutput
+        && state.omBlend[0].blendEnable() && (
         util::isDualSourceBlendFactor(state.omBlend[0].srcColorBlendFactor()) ||
         util::isDualSourceBlendFactor(state.omBlend[0].dstColorBlendFactor()) ||
         util::isDualSourceBlendFactor(state.omBlend[0].srcAlphaBlendFactor()) ||

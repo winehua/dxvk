@@ -6,9 +6,7 @@ namespace dxvk {
   DxvkSampler::DxvkSampler(
           DxvkDevice*             device,
     const DxvkSamplerCreateInfo&  info)
-  : m_vkd            (device->vkd()),
-    m_compareToDepth (info.compareToDepth),
-    m_compareOp      (info.compareOp) {
+  : m_vkd(device->vkd()) {
     VkSamplerCustomBorderColorCreateInfoEXT borderColorInfo;
     borderColorInfo.sType               = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT;
     borderColorInfo.pNext               = nullptr;
@@ -45,6 +43,10 @@ namespace dxvk {
 
     if (samplerInfo.borderColor == VK_BORDER_COLOR_FLOAT_CUSTOM_EXT)
       samplerInfo.pNext = &borderColorInfo;
+
+    m_info = samplerInfo;
+    m_info.pNext = nullptr;
+    m_customBorderColor = info.borderColor;
 
     const VkResult status = m_vkd->vkCreateSampler(
       m_vkd->device(), &samplerInfo, nullptr, &m_sampler);

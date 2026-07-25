@@ -136,7 +136,8 @@ namespace dxvk {
 
 
   DxvkShaderModule::DxvkShaderModule(DxvkShaderModule&& other)
-  : m_vkd(std::move(other.m_vkd)) {
+  : m_vkd(std::move(other.m_vkd)),
+    m_winehuaVariantId(std::move(other.m_winehuaVariantId)) {
     this->m_stage = other.m_stage;
     other.m_stage = VkPipelineShaderStageCreateInfo();
   }
@@ -161,6 +162,30 @@ namespace dxvk {
     info.flags    = 0;
     info.codeSize = code.size();
     info.pCode    = code.data();
+
+    const char* remappedDump = std::getenv("DXVK_WINEHUA_DUMP_REMAPPED_SPIRV");
+    const char* dumpPath = std::getenv("DXVK_SHADER_DUMP_PATH");
+    if (remappedDump && remappedDump[0] == '1' && dumpPath && dumpPath[0]) {
+      uint64_t hash = 1469598103934665603ull;
+      const auto* bytes = reinterpret_cast<const uint8_t*>(code.data());
+      for (size_t i = 0; i < code.size(); i++) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+      }
+
+      m_winehuaVariantId = str::format(shader->debugName(), "-", std::hex, hash);
+      std::ofstream uniqueDump(
+        str::tows(str::format(dumpPath, "/", shader->debugName(),
+          ".remapped-", std::hex, hash, ".spv").c_str()).c_str(),
+        std::ios_base::binary | std::ios_base::trunc);
+      code.store(uniqueDump);
+
+      std::ofstream conventionalDump(
+        str::tows(str::format(dumpPath, "/", shader->debugName(),
+          ".remapped.spv").c_str()).c_str(),
+        std::ios_base::binary | std::ios_base::trunc);
+      code.store(conventionalDump);
+    }
     
     if (m_vkd->vkCreateShaderModule(m_vkd->device(), &info, nullptr, &m_stage.module) != VK_SUCCESS)
       throw DxvkError("DxvkComputePipeline::DxvkComputePipeline: Failed to create shader module");
@@ -178,6 +203,7 @@ namespace dxvk {
   DxvkShaderModule& DxvkShaderModule::operator = (DxvkShaderModule&& other) {
     this->m_vkd   = std::move(other.m_vkd);
     this->m_stage = other.m_stage;
+    this->m_winehuaVariantId = std::move(other.m_winehuaVariantId);
     other.m_stage = VkPipelineShaderStageCreateInfo();
     return *this;
   }
@@ -208,7 +234,10 @@ namespace dxvk {
     // Run an analysis pass over the SPIR-V code to gather some
     // info that we may need during pipeline compilation.
     SpirvCodeBuffer code = std::move(spirv);
-    uint32_t o1VarId = 0;
+    std::unordered_map<uint32_t, size_t> locationZeroOffsets;
+    std::unordered_map<uint32_t, size_t> locationOneOffsets;
+    std::unordered_map<uint32_t, size_t> indexOffsets;
+    std::unordered_set<uint32_t> outputVars;
     
     for (auto ins : code) {
       if (ins.opCode() == spv::OpDecorate) {
@@ -216,14 +245,20 @@ namespace dxvk {
          || ins.arg(2) == spv::DecorationSpecId)
           m_idOffsets.push_back(ins.offset() + 3);
         
-        if (ins.arg(2) == spv::DecorationLocation && ins.arg(3) == 1) {
-          m_o1LocOffset = ins.offset() + 3;
-          o1VarId = ins.arg(1);
+        if (ins.arg(2) == spv::DecorationLocation) {
+          if (ins.arg(3) == 0)
+            locationZeroOffsets.insert({ ins.arg(1), ins.offset() + 3 });
+          else if (ins.arg(3) == 1)
+            locationOneOffsets.insert({ ins.arg(1), ins.offset() + 3 });
         }
         
-        if (ins.arg(2) == spv::DecorationIndex && ins.arg(1) == o1VarId)
-          m_o1IdxOffset = ins.offset() + 3;
+        if (ins.arg(2) == spv::DecorationIndex)
+          indexOffsets.insert({ ins.arg(1), ins.offset() + 3 });
       }
+
+      if (ins.opCode() == spv::OpVariable
+       && spv::StorageClass(ins.arg(3)) == spv::StorageClassOutput)
+        outputVars.insert(ins.arg(2));
 
       if (ins.opCode() == spv::OpExecutionMode) {
         if (ins.arg(2) == spv::ExecutionModeStencilRefReplacingEXT)
@@ -240,6 +275,24 @@ namespace dxvk {
         if (ins.arg(1) == spv::CapabilityShaderViewportIndexLayerEXT)
           m_flags.set(DxvkShaderFlag::ExportsViewportIndexLayerFromVertexStage);
       }
+    }
+
+    for (uint32_t varId : outputVars) {
+      const auto locationZero = locationZeroOffsets.find(varId);
+      const auto location = locationOneOffsets.find(varId);
+      const auto index = indexOffsets.find(varId);
+
+      if (locationZero != locationZeroOffsets.end()
+       && index != indexOffsets.end())
+        m_o0LocOffset = locationZero->second;
+
+      if (location != locationOneOffsets.end() && index != indexOffsets.end()) {
+        m_o1LocOffset = location->second;
+        m_o1IdxOffset = index->second;
+      }
+
+      if (m_o0LocOffset && m_o1LocOffset)
+        break;
     }
   }
 
@@ -278,11 +331,11 @@ namespace dxvk {
     /* The ordinary DXVK shader dump is emitted before this remap. For the
      * WineHua investigation, optionally capture the exact SPIR-V binary that
      * is handed to vkCreateShaderModule, including final set/binding IDs. */
-    const char* remappedDump = std::getenv("DXVK_WINEHUA_DUMP_REMAPPED_SPIRV");
-    const char* dumpPath = std::getenv("DXVK_SHADER_DUMP_PATH");
     // For dual-source blending we need to re-map
     // location 1, index 0 to location 0, index 1
-    if (info.fsDualSrcBlend && m_o1IdxOffset && m_o1LocOffset)
+    if (info.fsSecondaryOutput && m_o0LocOffset && m_o1LocOffset)
+      std::swap(code[m_o0LocOffset], code[m_o1LocOffset]);
+    else if (info.fsDualSrcBlend && m_o1IdxOffset && m_o1LocOffset)
       std::swap(code[m_o1IdxOffset], code[m_o1LocOffset]);
     
     // Replace undefined input variables with zero
@@ -297,13 +350,6 @@ namespace dxvk {
      * to OpConstantTrue and remove its SpecId decoration.  Dumping before
      * that rewrite made the so-called exact replay exercise a different
      * SPIR-V binary than the runtime pipeline. */
-    if (remappedDump && remappedDump[0] == '1' && dumpPath && dumpPath[0]) {
-      std::ofstream dumpStream(
-        str::tows(str::format(dumpPath, "/", debugName(), ".remapped.spv").c_str()).c_str(),
-        std::ios_base::binary | std::ios_base::trunc);
-      spirvCode.store(dumpStream);
-    }
-
     return DxvkShaderModule(vkd, this, spirvCode);
   }
   

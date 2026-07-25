@@ -121,14 +121,17 @@ namespace dxvk {
 
       if (m_winehuaFrameId == winehuaRenderTargetDumpFrame())
         this->winehuaWriteGeometryDumps();
-      else
+      else {
         m_winehuaGeometryDumps.clear();
+        m_winehuaGeometryStateJson.clear();
+      }
 
       if (nextFrameId == winehuaRenderTargetDumpFrame()) {
         Logger::info(str::format(
           "WineHuaRenderTargetDump: armed frame=", nextFrameId,
           " maxAttachments=", winehuaRenderTargetDumpMaxAttachments(),
           " maxBytes=", winehuaRenderTargetDumpMaxBytes(),
+          " sampled=", winehuaRenderTargetDumpSampledEnabled() ? 1 : 0,
           " path=", winehuaRenderTargetDumpPath()));
       }
     }
@@ -138,6 +141,7 @@ namespace dxvk {
       Logger::info(str::format(
         "WineHuaDraw: armed frame=", nextFrameId,
         " pass=", winehuaDrawTracePass(),
+        " secondPass=", winehuaDrawTraceSecondPass(),
         " maxDraws=", winehuaDrawTraceMaxDraws(),
         " draw=", winehuaRenderTargetDumpDraw(),
         " fs=", winehuaRenderTargetDumpFragmentShader(),
@@ -154,8 +158,10 @@ namespace dxvk {
     m_winehuaLastPassDrawId = UINT32_MAX;
     m_winehuaTraceDrawsEmitted = 0;
     m_winehuaTargetDrawCaptured = false;
+    m_winehuaSecondTargetDrawCaptured = false;
     m_winehuaDumpBytes = 0;
     m_winehuaGeometryBytes = 0;
+    m_winehuaGeometryStateJson.clear();
     m_winehuaLastGraphicsResourceViews = "[]";
     m_winehuaLastGraphicsImages.clear();
   }
@@ -401,12 +407,19 @@ namespace dxvk {
     uint32_t instanceCount,
     uint32_t firstInstance) {
     if (!winehuaTargetDrawCaptureEnabled()
-     || m_winehuaTargetDrawCaptured
      || m_winehuaFrameId != winehuaRenderTargetDumpFrame())
       return;
 
     const uint32_t selectedPass = winehuaDrawTracePass();
-    if (selectedPass != UINT32_MAX && m_winehuaActivePassId != selectedPass)
+    const uint32_t secondPass = winehuaDrawTraceSecondPass();
+    const bool matchesPrimary = selectedPass == UINT32_MAX
+      || m_winehuaActivePassId == selectedPass;
+    const bool matchesSecond = secondPass != UINT32_MAX
+      && m_winehuaActivePassId == secondPass;
+    if (!matchesPrimary && !matchesSecond)
+      return;
+    if ((matchesSecond && m_winehuaSecondTargetDrawCaptured)
+     || (!matchesSecond && m_winehuaTargetDrawCaptured))
       return;
 
     const char* targetFragmentShader = winehuaRenderTargetDumpFragmentShader();
@@ -428,7 +441,10 @@ namespace dxvk {
       return;
     }
 
-    m_winehuaTargetDrawCaptured = true;
+    if (matchesSecond)
+      m_winehuaSecondTargetDrawCaptured = true;
+    else
+      m_winehuaTargetDrawCaptured = true;
     Logger::info(str::format(
       "WineHuaDrawCapture: frame=", m_winehuaFrameId,
       " pass=", m_winehuaActivePassId,
@@ -442,7 +458,190 @@ namespace dxvk {
       " vs=", vertexShader,
       " fs=", fragmentShader,
       " ending render pass for diagnostic capture"));
+    const VkPipeline capturedPipeline = m_gpActivePipeline;
+    const VkDescriptorSet capturedDescriptorSet = m_gpSet;
     this->spillRenderPass(false);
+
+    const auto& pipelineState = m_state.gp.state;
+    const auto& viewport = m_state.vp.viewports[0];
+    const auto& scissor = m_state.vp.scissorRects[0];
+    const auto frontStencil = pipelineState.dsFront.state();
+    const auto backStencil = pipelineState.dsBack.state();
+    const VkSampleCountFlags sampleCount = pipelineState.ms.sampleCount()
+      ? pipelineState.ms.sampleCount() : pipelineState.rs.sampleCount();
+    const VkPushConstantRange pushRange = m_state.gp.pipeline != nullptr
+      && m_state.gp.pipeline->layout() != nullptr
+      ? m_state.gp.pipeline->layout()->pushConstRange()
+      : VkPushConstantRange { };
+
+    std::string stateJson = str::format(
+      "{\"frame\":", m_winehuaFrameId,
+      ",\"pass\":", m_winehuaActivePassId,
+      ",\"draw\":", m_winehuaLastPassDrawId,
+      ",\"kind\":\"pipeline-state\"",
+      ",\"pipeline\":", uint64_t(capturedPipeline),
+      ",\"descriptorSet\":", uint64_t(capturedDescriptorSet),
+      ",\"vertexShader\":\"", vertexShader, "\"",
+      ",\"fragmentShader\":\"", fragmentShader, "\"",
+      ",\"inputAssembly\":{\"topology\":", uint32_t(pipelineState.ia.primitiveTopology()),
+      ",\"primitiveRestart\":", pipelineState.ia.primitiveRestart() ? "true" : "false",
+      ",\"patchVertexCount\":", pipelineState.ia.patchVertexCount(), "}",
+      ",\"rasterizer\":{\"depthClipEnable\":", pipelineState.rs.depthClipEnable() ? "true" : "false",
+      ",\"depthBiasEnable\":", pipelineState.rs.depthBiasEnable() ? "true" : "false",
+      ",\"polygonMode\":", uint32_t(pipelineState.rs.polygonMode()),
+      ",\"cullMode\":", uint32_t(pipelineState.rs.cullMode()),
+      ",\"frontFace\":", uint32_t(pipelineState.rs.frontFace()),
+      ",\"viewportCount\":", pipelineState.rs.viewportCount(), "}",
+      ",\"multisample\":{\"sampleCount\":", uint32_t(sampleCount),
+      ",\"sampleMask\":", pipelineState.ms.sampleMask(),
+      ",\"alphaToCoverage\":", pipelineState.ms.enableAlphaToCoverage() ? "true" : "false", "}",
+      ",\"depthStencil\":{\"depthTest\":", pipelineState.ds.enableDepthTest() ? "true" : "false",
+      ",\"depthWrite\":", pipelineState.ds.enableDepthWrite() ? "true" : "false",
+      ",\"depthBoundsTest\":", pipelineState.ds.enableDepthBoundsTest() ? "true" : "false",
+      ",\"stencilTest\":", pipelineState.ds.enableStencilTest() ? "true" : "false",
+      ",\"depthCompareOp\":", uint32_t(pipelineState.ds.depthCompareOp()),
+      ",\"front\":[", uint32_t(frontStencil.failOp), ",", uint32_t(frontStencil.passOp),
+      ",", uint32_t(frontStencil.depthFailOp), ",", uint32_t(frontStencil.compareOp),
+      ",", frontStencil.compareMask, ",", frontStencil.writeMask, ",", m_state.dyn.stencilReference, "]",
+      ",\"back\":[", uint32_t(backStencil.failOp), ",", uint32_t(backStencil.passOp),
+      ",", uint32_t(backStencil.depthFailOp), ",", uint32_t(backStencil.compareOp),
+      ",", backStencil.compareMask, ",", backStencil.writeMask, ",", m_state.dyn.stencilReference, "]}",
+      ",\"viewport\":[", viewport.x, ",", viewport.y, ",", viewport.width, ",", viewport.height,
+      ",", viewport.minDepth, ",", viewport.maxDepth, "]",
+      ",\"scissor\":[", scissor.offset.x, ",", scissor.offset.y, ",",
+      scissor.extent.width, ",", scissor.extent.height, "]",
+      ",\"dynamic\":{\"depthBias\":[", m_state.dyn.depthBias.depthBiasConstant, ",",
+      m_state.dyn.depthBias.depthBiasClamp, ",", m_state.dyn.depthBias.depthBiasSlope, "]",
+      ",\"depthBounds\":[", m_state.dyn.depthBounds.minDepthBounds, ",",
+      m_state.dyn.depthBounds.maxDepthBounds, "]",
+      ",\"blendConstants\":[", m_state.dyn.blendConstants.r, ",", m_state.dyn.blendConstants.g,
+      ",", m_state.dyn.blendConstants.b, ",", m_state.dyn.blendConstants.a, "]}",
+      ",\"outputMerger\":{\"logicOpEnable\":", pipelineState.om.enableLogicOp() ? "true" : "false",
+      ",\"logicOp\":", uint32_t(pipelineState.om.logicOp()),
+      ",\"colorFormats\":[");
+
+    for (uint32_t i = 0; i < MaxNumRenderTargets; i++) {
+      if (i)
+        stateJson += ',';
+      const auto& target = m_state.om.renderTargets.color[i];
+      stateJson += str::format(target.view != nullptr
+        ? uint32_t(target.view->info().format) : uint32_t(VK_FORMAT_UNDEFINED));
+    }
+
+    const auto& depthTarget = m_state.om.renderTargets.depth;
+    stateJson += str::format(
+      "],\"depthFormat\":", depthTarget.view != nullptr
+        ? uint32_t(depthTarget.view->info().format) : uint32_t(VK_FORMAT_UNDEFINED),
+      ",\"blendAttachments\":[");
+    for (uint32_t i = 0; i < MaxNumRenderTargets; i++) {
+      if (i)
+        stateJson += ',';
+      const auto blend = pipelineState.omBlend[i].state();
+      stateJson += str::format(
+        "{\"blendEnable\":", blend.blendEnable ? "true" : "false",
+        ",\"srcColor\":", uint32_t(blend.srcColorBlendFactor),
+        ",\"dstColor\":", uint32_t(blend.dstColorBlendFactor),
+        ",\"colorOp\":", uint32_t(blend.colorBlendOp),
+        ",\"srcAlpha\":", uint32_t(blend.srcAlphaBlendFactor),
+        ",\"dstAlpha\":", uint32_t(blend.dstAlphaBlendFactor),
+        ",\"alphaOp\":", uint32_t(blend.alphaBlendOp),
+        ",\"writeMask\":", uint32_t(blend.colorWriteMask),
+        ",\"swizzle\":[", pipelineState.omSwizzle[i].rIndex(), ",",
+        pipelineState.omSwizzle[i].gIndex(), ",", pipelineState.omSwizzle[i].bIndex(), ",",
+        pipelineState.omSwizzle[i].aIndex(), "]}");
+    }
+    stateJson += "]}";
+
+    stateJson += ",\"vertexBindings\":[";
+    for (uint32_t i = 0; i < pipelineState.il.bindingCount(); i++) {
+      if (i)
+        stateJson += ',';
+      const auto& binding = pipelineState.ilBindings[i];
+      const uint32_t sourceBinding = binding.binding();
+      stateJson += str::format(
+        "{\"pipelineBinding\":", i,
+        ",\"sourceBinding\":", sourceBinding,
+        ",\"pipelineStride\":", binding.stride(),
+        ",\"boundStride\":", m_state.vi.vertexStrides[sourceBinding],
+        ",\"inputRate\":", uint32_t(binding.inputRate()),
+        ",\"divisor\":", binding.divisor(), "}");
+    }
+    stateJson += "],\"vertexAttributes\":[";
+    for (uint32_t i = 0; i < pipelineState.il.attributeCount(); i++) {
+      if (i)
+        stateJson += ',';
+      const auto& attribute = pipelineState.ilAttributes[i];
+      stateJson += str::format(
+        "{\"location\":", attribute.location(),
+        ",\"sourceBinding\":", attribute.binding(),
+        ",\"format\":", uint32_t(attribute.format()),
+        ",\"offset\":", attribute.offset(), "}");
+    }
+    stateJson += "],\"descriptorBindings\":[";
+    for (size_t i = 0; i < m_winehuaGraphicsBindings.size(); i++) {
+      if (i)
+        stateJson += ',';
+      const auto& binding = m_winehuaGraphicsBindings[i];
+      stateJson += str::format(
+        "{\"binding\":", binding.binding,
+        ",\"resourceSlot\":", binding.resourceSlot,
+        ",\"type\":", uint32_t(binding.descriptorType),
+        ",\"stages\":", uint32_t(binding.stages),
+        ",\"viewType\":", uint32_t(binding.viewType), "}");
+    }
+    stateJson += "],\"samplers\":[";
+    bool firstSampler = true;
+    for (const auto& binding : m_winehuaGraphicsBindings) {
+      if (binding.sampler == nullptr)
+        continue;
+      if (!firstSampler)
+        stateJson += ',';
+      const auto& sampler = binding.sampler->info();
+      const auto& border = binding.sampler->customBorderColor();
+      stateJson += str::format(
+        "{\"binding\":", binding.binding,
+        ",\"resourceSlot\":", binding.resourceSlot,
+        ",\"flags\":", uint32_t(sampler.flags),
+        ",\"magFilter\":", uint32_t(sampler.magFilter),
+        ",\"minFilter\":", uint32_t(sampler.minFilter),
+        ",\"mipmapMode\":", uint32_t(sampler.mipmapMode),
+        ",\"addressModeU\":", uint32_t(sampler.addressModeU),
+        ",\"addressModeV\":", uint32_t(sampler.addressModeV),
+        ",\"addressModeW\":", uint32_t(sampler.addressModeW),
+        ",\"mipLodBias\":", sampler.mipLodBias,
+        ",\"anisotropyEnable\":", sampler.anisotropyEnable ? "true" : "false",
+        ",\"maxAnisotropy\":", sampler.maxAnisotropy,
+        ",\"compareEnable\":", sampler.compareEnable ? "true" : "false",
+        ",\"compareOp\":", uint32_t(sampler.compareOp),
+        ",\"minLod\":", sampler.minLod,
+        ",\"maxLod\":", sampler.maxLod,
+        ",\"borderColor\":", uint32_t(sampler.borderColor),
+        ",\"customBorder\":[", border.float32[0], ",", border.float32[1], ",",
+        border.float32[2], ",", border.float32[3], "]",
+        ",\"unnormalizedCoordinates\":", sampler.unnormalizedCoordinates ? "true" : "false", "}");
+      firstSampler = false;
+    }
+    stateJson += "],\"specializationConstants\":[";
+    for (uint32_t i = 0; i < MaxNumSpecConstants; i++) {
+      if (i)
+        stateJson += ',';
+      stateJson += str::format(pipelineState.sc.specConstants[i]);
+    }
+    stateJson += str::format(
+      "],\"pushConstantOffset\":", pushRange.offset,
+      ",\"pushConstantSize\":", pushRange.size,
+      ",\"pushConstantWords\":[");
+    const uint32_t pushWordCount = std::min(pushRange.size, 64u) / sizeof(uint32_t);
+    for (uint32_t i = 0; i < pushWordCount; i++) {
+      if (i)
+        stateJson += ',';
+      uint32_t word = 0;
+      std::memcpy(&word, &m_state.pc.data[pushRange.offset + i * sizeof(uint32_t)], sizeof(word));
+      stateJson += str::format(word);
+    }
+    stateJson += "]}";
+    m_winehuaGeometryStateJson += stateJson;
+    m_winehuaGeometryStateJson += '\n';
 
     const uint64_t maxBytes = winehuaGeometryDumpMaxBytes();
     const uint32_t indexSize = indexed
@@ -598,8 +797,12 @@ namespace dxvk {
       Logger::err(str::format(
         "WineHuaGeometryCapture: cannot open metadata path=", metadataPath));
       m_winehuaGeometryDumps.clear();
+      m_winehuaGeometryStateJson.clear();
       return;
     }
+
+    if (!m_winehuaGeometryStateJson.empty())
+      metadata << m_winehuaGeometryStateJson;
 
     uint32_t filesWritten = 0;
     for (auto& dump : m_winehuaGeometryDumps) {
@@ -664,6 +867,7 @@ namespace dxvk {
       " bytes=", m_winehuaGeometryBytes,
       " metadata=", metadataPath));
     m_winehuaGeometryDumps.clear();
+    m_winehuaGeometryStateJson.clear();
   }
 
 
@@ -692,9 +896,11 @@ namespace dxvk {
         m_device->waitForResource(dump.buffer, DxvkAccess::Write);
         dump.buffer->invalidateMappedSlice(slice);
 
+        const std::string mipSuffix = dump.kind == "sampled" && dump.baseMip
+          ? str::format("-mip-", dump.baseMip) : std::string();
         fileName = str::format(
           frameName, "-pass-", dump.passId,
-          "-", dump.kind, "-", dump.attachmentId, ".bin");
+          "-", dump.kind, "-", dump.attachmentId, mipSuffix, ".bin");
         const std::string dataPath = str::format(basePath, "/", fileName);
         std::ofstream data(
           str::tows(dataPath.c_str()).c_str(),
@@ -2108,9 +2314,124 @@ namespace dxvk {
           " instanceCount=", instanceCount,
           " firstVertex=", firstVertex,
           " firstInstance=", firstInstance));
-      m_cmd->cmdDraw(
-        vertexCount, instanceCount,
-        firstVertex, firstInstance);
+
+      const auto& blend = m_state.gp.state.omBlend[0];
+      bool singleColorTarget = m_state.om.renderTargets.color[0].view != nullptr;
+      for (uint32_t i = 1; i < MaxNumRenderTargets; i++)
+        singleColorTarget &= m_state.om.renderTargets.color[i].view == nullptr;
+
+      const bool emulateDualSource =
+        !m_device->features().core.features.dualSrcBlend
+        && singleColorTarget
+        && m_state.gp.shaders.fs != nullptr
+        && (m_state.gp.shaders.fs->info().outputMask & 0x2u)
+        && !m_state.gp.flags.any(
+          DxvkGraphicsPipelineFlag::HasTransformFeedback,
+          DxvkGraphicsPipelineFlag::HasStorageDescriptors)
+        && !m_state.gp.state.om.enableLogicOp()
+        && !m_state.gp.state.ds.enableDepthTest()
+        && !m_state.gp.state.ds.enableStencilTest()
+        && blend.blendEnable()
+        && blend.srcColorBlendFactor() == VK_BLEND_FACTOR_ONE
+        && blend.dstColorBlendFactor() == VK_BLEND_FACTOR_SRC1_COLOR
+        && blend.colorBlendOp() == VK_BLEND_OP_ADD
+        && blend.srcAlphaBlendFactor() == VK_BLEND_FACTOR_ONE
+        && blend.dstAlphaBlendFactor() == VK_BLEND_FACTOR_SRC1_ALPHA
+        && blend.alphaBlendOp() == VK_BLEND_OP_ADD;
+
+      bool emulated = false;
+      if (unlikely(emulateDualSource)) {
+        const WineHuaDualSrcMode dualSrcMode = winehuaDualSrcMode();
+        const bool runSecondary = dualSrcMode != WineHuaDualSrcMode::PrimaryReplace
+                               && dualSrcMode != WineHuaDualSrcMode::PrimaryAdd;
+        const bool runPrimary = dualSrcMode != WineHuaDualSrcMode::SecondaryReplace
+                             && dualSrcMode != WineHuaDualSrcMode::SecondaryMultiply;
+        const bool replaceSecondary =
+          dualSrcMode == WineHuaDualSrcMode::SecondaryReplace;
+        const bool replacePrimary =
+          dualSrcMode == WineHuaDualSrcMode::PrimaryReplace;
+        const VkColorComponentFlags rgbWriteMask = blend.colorWriteMask()
+          & (VK_COLOR_COMPONENT_R_BIT
+           | VK_COLOR_COMPONENT_G_BIT
+           | VK_COLOR_COMPONENT_B_BIT);
+
+        if (rgbWriteMask) {
+          DxvkGraphicsPipelineStateInfo secondaryState = m_state.gp.state;
+          DxvkGraphicsPipelineStateInfo primaryState = m_state.gp.state;
+
+          secondaryState.ds = DxvkDsInfo(
+            m_state.gp.state.ds.enableDepthTest(),
+            VK_FALSE,
+            m_state.gp.state.ds.enableDepthBoundsTest(),
+            m_state.gp.state.ds.enableStencilTest(),
+            m_state.gp.state.ds.depthCompareOp());
+          secondaryState.omBlend[0] = DxvkOmAttachmentBlend(
+            VK_TRUE,
+            replaceSecondary ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO,
+            replaceSecondary ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_SRC_COLOR,
+            VK_BLEND_OP_ADD,
+            VK_BLEND_FACTOR_ZERO,
+            VK_BLEND_FACTOR_ONE,
+            VK_BLEND_OP_ADD,
+            rgbWriteMask);
+          primaryState.omBlend[0] = DxvkOmAttachmentBlend(
+            VK_TRUE,
+            VK_BLEND_FACTOR_ONE,
+            replacePrimary ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE,
+            VK_BLEND_OP_ADD,
+            VK_BLEND_FACTOR_ZERO,
+            VK_BLEND_FACTOR_ONE,
+            VK_BLEND_OP_ADD,
+            rgbWriteMask);
+
+          const DxvkRenderPass* renderPass =
+            m_state.om.framebufferInfo.renderPass();
+          const VkPipeline secondaryPipeline = runSecondary
+            ? m_state.gp.pipeline->getPipelineHandle(
+                secondaryState, renderPass, true)
+            : VK_NULL_HANDLE;
+          const VkPipeline primaryPipeline = runPrimary
+            ? m_state.gp.pipeline->getPipelineHandle(
+                primaryState, renderPass, false)
+            : VK_NULL_HANDLE;
+
+          if ((!runSecondary || secondaryPipeline)
+           && (!runPrimary || primaryPipeline)) {
+            static std::atomic<uint32_t> logged { 0 };
+            if (logged.fetch_add(1, std::memory_order_relaxed) == 0) {
+              Logger::info(str::format(
+                "WineHuaDualSrcEmulation: mode=",
+                winehuaDualSrcModeName(dualSrcMode), " fs=",
+                m_state.gp.shaders.fs->debugName()));
+            }
+
+            if (runSecondary) {
+              m_cmd->cmdBindPipeline(
+                VK_PIPELINE_BIND_POINT_GRAPHICS, secondaryPipeline);
+              m_cmd->cmdDraw(
+                vertexCount, instanceCount,
+                firstVertex, firstInstance);
+            }
+            if (runPrimary) {
+              m_cmd->cmdBindPipeline(
+                VK_PIPELINE_BIND_POINT_GRAPHICS, primaryPipeline);
+              m_cmd->cmdDraw(
+                vertexCount, instanceCount,
+                firstVertex, firstInstance);
+            }
+            emulated = true;
+
+            m_gpActivePipeline = VK_NULL_HANDLE;
+            m_flags.set(DxvkContextFlag::GpDirtyPipelineState);
+          }
+        }
+      }
+
+      if (!emulated) {
+        m_cmd->cmdDraw(
+          vertexCount, instanceCount,
+          firstVertex, firstInstance);
+      }
       if (unlikely(winehuaTargetDrawCaptureEnabled()))
         this->winehuaCaptureTargetDraw(false, vertexCount, firstVertex, 0,
           instanceCount, firstInstance);
@@ -4967,6 +5288,9 @@ namespace dxvk {
       m_winehuaRenderTargetDumps.push_back(std::move(dump));
     }
 
+    if (!winehuaRenderTargetDumpSampledEnabled())
+      return;
+
     for (const auto& resource : m_winehuaLastGraphicsImages) {
       bool duplicate = false;
       for (const auto& existing : m_winehuaRenderTargetDumps) {
@@ -4998,18 +5322,12 @@ namespace dxvk {
   void DxvkContext::winehuaCaptureImageView(
           WineHuaRenderTargetDump dump,
     const Rc<DxvkImageView>&      view) {
-    if (m_winehuaRenderTargetDumps.size()
-        >= winehuaRenderTargetDumpMaxAttachments())
-      return;
-
     const auto& viewInfo = view->info();
     const auto& imageInfo = view->imageInfo();
     dump.viewCookie = view->cookie();
     dump.imageHandle = view->imageHandle();
     dump.imageFormat = imageInfo.format;
     dump.viewFormat = viewInfo.format;
-    dump.extent = view->mipLevelExtent(0);
-    dump.baseMip = viewInfo.minLevel;
     dump.baseLayer = imageInfo.type == VK_IMAGE_TYPE_3D
       ? 0u : viewInfo.minLayer;
     dump.layerCount = imageInfo.type == VK_IMAGE_TYPE_3D
@@ -5025,44 +5343,54 @@ namespace dxvk {
     dump.aspect = copyAspect;
 
     const auto formatInfo = view->formatInfo();
-    const auto blockCount = util::computeBlockCount(
-      dump.extent, formatInfo->blockSize);
-    dump.rowPitch = blockCount.width * formatInfo->elementSize;
-    dump.slicePitch = blockCount.height * dump.rowPitch;
-    dump.dataSize = blockCount.depth * dump.slicePitch * dump.layerCount;
+    for (uint32_t mip = 0; mip < viewInfo.numLevels; mip++) {
+      if (m_winehuaRenderTargetDumps.size()
+          >= winehuaRenderTargetDumpMaxAttachments())
+        break;
 
-    const bool captureSupported = imageInfo.sampleCount == VK_SAMPLE_COUNT_1_BIT
-      && (imageInfo.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
-      && !formatInfo->flags.test(DxvkFormatFlag::MultiPlane)
-      && dump.extent.width && dump.extent.height && dump.dataSize
-      && m_winehuaDumpBytes + dump.dataSize
-          <= winehuaRenderTargetDumpMaxBytes();
+      WineHuaRenderTargetDump mipDump = dump;
+      mipDump.extent = view->mipLevelExtent(mip);
+      mipDump.baseMip = viewInfo.minLevel + mip;
 
-    if (captureSupported) {
-      DxvkBufferCreateInfo bufferInfo;
-      bufferInfo.size = dump.dataSize;
-      bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-      bufferInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
-      bufferInfo.access = VK_ACCESS_TRANSFER_WRITE_BIT;
+      const auto blockCount = util::computeBlockCount(
+        mipDump.extent, formatInfo->blockSize);
+      mipDump.rowPitch = blockCount.width * formatInfo->elementSize;
+      mipDump.slicePitch = blockCount.height * mipDump.rowPitch;
+      mipDump.dataSize = blockCount.depth * mipDump.slicePitch * mipDump.layerCount;
 
-      dump.buffer = m_device->createBuffer(bufferInfo,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-      | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      const bool captureSupported = imageInfo.sampleCount == VK_SAMPLE_COUNT_1_BIT
+        && (imageInfo.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+        && !formatInfo->flags.test(DxvkFormatFlag::MultiPlane)
+        && mipDump.extent.width && mipDump.extent.height && mipDump.dataSize
+        && m_winehuaDumpBytes + mipDump.dataSize
+            <= winehuaRenderTargetDumpMaxBytes();
 
-      VkImageSubresourceLayers subresource;
-      subresource.aspectMask = copyAspect;
-      subresource.mipLevel = dump.baseMip;
-      subresource.baseArrayLayer = dump.baseLayer;
-      subresource.layerCount = dump.layerCount;
+      if (captureSupported) {
+        DxvkBufferCreateInfo bufferInfo;
+        bufferInfo.size = mipDump.dataSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufferInfo.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        bufferInfo.access = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-      this->copyImageToBuffer(
-        dump.buffer, 0, 0, 0,
-        view->image(), subresource,
-        VkOffset3D { 0, 0, 0 }, dump.extent);
-      m_winehuaDumpBytes += dump.dataSize;
+        mipDump.buffer = m_device->createBuffer(bufferInfo,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        VkImageSubresourceLayers subresource;
+        subresource.aspectMask = copyAspect;
+        subresource.mipLevel = mipDump.baseMip;
+        subresource.baseArrayLayer = mipDump.baseLayer;
+        subresource.layerCount = mipDump.layerCount;
+
+        this->copyImageToBuffer(
+          mipDump.buffer, 0, 0, 0,
+          view->image(), subresource,
+          VkOffset3D { 0, 0, 0 }, mipDump.extent);
+        m_winehuaDumpBytes += mipDump.dataSize;
+      }
+
+      m_winehuaRenderTargetDumps.push_back(std::move(mipDump));
     }
-
-    m_winehuaRenderTargetDumps.push_back(std::move(dump));
   }
   
   
