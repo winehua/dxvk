@@ -214,6 +214,7 @@ namespace dxvk {
           " pass=", m_winehuaActivePassId,
           " guestCmd=0x", std::hex,
             reinterpret_cast<uintptr_t>(m_cmd->winehuaExecBuffer()),
+          " descriptorSet=0x", m_gpSet,
           " binding=", binding.binding,
           " resourceSlot=", binding.resourceSlot,
           " descriptorType=", binding.descriptorType,
