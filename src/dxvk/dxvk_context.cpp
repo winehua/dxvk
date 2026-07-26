@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <process.h>
 #include <string>
 #include <vector>
 #include <utility>
@@ -207,7 +208,9 @@ namespace dxvk {
         words += ']';
 
         Logger::info(str::format(
-          "WineHuaUbo: frame=", m_winehuaFrameId,
+          "WineHuaUbo: winPid=", _getpid(),
+          " recording=", m_cmd->winehuaRecordingId(),
+          " frame=", m_winehuaFrameId,
           " pass=", m_winehuaActivePassId,
           " guestCmd=0x", std::hex,
             reinterpret_cast<uintptr_t>(m_cmd->winehuaExecBuffer()),
@@ -229,8 +232,10 @@ namespace dxvk {
         emitted = true;
       }
 
-      if (emitted)
+      if (emitted) {
+        m_cmd->winehuaTraceFrame(m_winehuaFrameId);
         m_winehuaCameraTraceFrame = m_winehuaFrameId;
+      }
     }
 
     if (!winehuaDrawTraceEnabled()

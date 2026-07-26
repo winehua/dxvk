@@ -793,6 +793,15 @@ namespace dxvk {
       return m_execBuffer;
     }
 
+    void winehuaTraceFrame(uint64_t frameId) {
+      if (m_winehuaFrames.empty() || m_winehuaFrames.back() != frameId)
+        m_winehuaFrames.push_back(frameId);
+    }
+
+    uint64_t winehuaRecordingId() const {
+      return m_winehuaRecordingId;
+    }
+
     void resetQuery(
             VkQueryPool             queryPool,
             uint32_t                queryId) {
@@ -836,6 +845,9 @@ namespace dxvk {
     DxvkBufferTracker   m_bufferTracker;
     DxvkStatCounters    m_statCounters;
     DxvkQueueSubmission m_submission;
+
+    uint64_t             m_winehuaRecordingId = 0;
+    std::vector<uint64_t> m_winehuaFrames;
 
     std::vector<DxvkFenceValuePair> m_waitSemaphores;
     std::vector<DxvkFenceValuePair> m_signalSemaphores;

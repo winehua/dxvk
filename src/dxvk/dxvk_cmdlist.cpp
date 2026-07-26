@@ -1,7 +1,12 @@
 #include "dxvk_cmdlist.h"
 #include "dxvk_device.h"
 
+#include <atomic>
+#include <process.h>
+
 namespace dxvk {
+
+  static std::atomic<uint64_t> g_winehuaRecordingId = { 0 };
     
   DxvkCommandList::DxvkCommandList(DxvkDevice* device)
   : m_device        (device),
@@ -106,6 +111,23 @@ namespace dxvk {
       m_submission.cmdBuffers.push_back(m_initBuffer);
     if (m_cmdBuffersUsed.test(DxvkCmdBuffer::ExecBuffer))
       m_submission.cmdBuffers.push_back(m_execBuffer);
+
+    if (winehuaCameraTraceEnabled() && !m_winehuaFrames.empty()) {
+      std::string frames = "[";
+      for (size_t i = 0; i < m_winehuaFrames.size(); i++) {
+        if (i)
+          frames += ',';
+        frames += str::format(m_winehuaFrames[i]);
+      }
+      frames += ']';
+
+      Logger::info(str::format(
+        "WineHuaDxvkSubmit: winPid=", _getpid(),
+        " recording=", m_winehuaRecordingId,
+        " execCmd=0x", std::hex, reinterpret_cast<uintptr_t>(m_execBuffer),
+        " frameCount=", std::dec, m_winehuaFrames.size(),
+        " frames=", frames));
+    }
     
     if (waitSemaphore)
       m_submission.addWaitSemaphore(waitSemaphore, 0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
@@ -160,6 +182,11 @@ namespace dxvk {
     // Unconditionally mark the exec buffer as used. There
     // is virtually no use case where this isn't correct.
     m_cmdBuffersUsed = DxvkCmdBuffer::ExecBuffer;
+
+    m_winehuaFrames.clear();
+    m_winehuaRecordingId = winehuaCameraTraceEnabled()
+      ? g_winehuaRecordingId.fetch_add(1, std::memory_order_relaxed) + 1
+      : 0;
   }
   
   
