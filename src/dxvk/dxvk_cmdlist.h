@@ -783,6 +783,16 @@ namespace dxvk {
 
     void cmdInsertDebugUtilsLabel(VkDebugUtilsLabelEXT *pLabelInfo);
 
+    /**
+     * \brief Returns the execution command buffer for opt-in WineHua tracing
+     *
+     * This is diagnostic identity only. It must never be used to change
+     * command recording, submission, or lifetime behavior.
+     */
+    VkCommandBuffer winehuaExecBuffer() const {
+      return m_execBuffer;
+    }
+
     void resetQuery(
             VkQueryPool             queryPool,
             uint32_t                queryId) {

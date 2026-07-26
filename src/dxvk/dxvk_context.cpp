@@ -209,6 +209,8 @@ namespace dxvk {
         Logger::info(str::format(
           "WineHuaUbo: frame=", m_winehuaFrameId,
           " pass=", m_winehuaActivePassId,
+          " guestCmd=0x", std::hex,
+            reinterpret_cast<uintptr_t>(m_cmd->winehuaExecBuffer()),
           " binding=", binding.binding,
           " resourceSlot=", binding.resourceSlot,
           " descriptorType=", binding.descriptorType,
