@@ -170,6 +170,67 @@ namespace dxvk {
   void DxvkContext::winehuaTraceDraw(
     const char*         drawType,
     const std::string&  arguments) {
+    if (winehuaCameraTraceEnabled()
+     && m_winehuaCameraTraceFrame != m_winehuaFrameId
+     && m_winehuaActivePassId == 0) {
+      bool emitted = false;
+      for (const auto& binding : m_winehuaGraphicsBindings) {
+        if (binding.descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+         && binding.descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+          continue;
+
+        if (!binding.bufferSlice.defined())
+          continue;
+
+        const DxvkBufferSliceHandle slice = binding.bufferSlice.getSliceHandle();
+        if (!slice.mapPtr || !slice.length)
+          continue;
+
+        const uint64_t byteCount = std::min<uint64_t>(slice.length, 4096u);
+        const auto* bytes = reinterpret_cast<const uint8_t*>(slice.mapPtr);
+        uint64_t contentHash = 1469598103934665603ull;
+        for (uint64_t i = 0; i < byteCount; i++) {
+          contentHash ^= bytes[i];
+          contentHash *= 1099511628211ull;
+        }
+
+        std::string words = "[";
+        const uint32_t wordCount = uint32_t(
+          std::min<uint64_t>(byteCount, 64u) / sizeof(uint32_t));
+        for (uint32_t i = 0; i < wordCount; i++) {
+          uint32_t word = 0;
+          std::memcpy(&word, bytes + i * sizeof(uint32_t), sizeof(word));
+          if (i)
+            words += ',';
+          words += str::format("0x", std::hex, word);
+        }
+        words += ']';
+
+        Logger::info(str::format(
+          "WineHuaUbo: frame=", m_winehuaFrameId,
+          " pass=", m_winehuaActivePassId,
+          " binding=", binding.binding,
+          " resourceSlot=", binding.resourceSlot,
+          " descriptorType=", binding.descriptorType,
+          " stages=0x", std::hex, binding.stages,
+          " writtenHandle=0x", binding.buffer.buffer,
+          " writtenBaseOffset=", std::dec, binding.buffer.offset,
+          " writtenRange=", binding.buffer.range,
+          " dynamicOffsetBound=", binding.dynamicOffsetBound ? 1 : 0,
+          " dynamicOffset=", binding.dynamicOffset,
+          " sliceHandle=0x", std::hex, slice.handle,
+          " sliceOffset=", std::dec, slice.offset,
+          " sliceLength=", slice.length,
+          " bytes=", byteCount,
+          " hash=0x", std::hex, contentHash,
+          " words=", words));
+        emitted = true;
+      }
+
+      if (emitted)
+        m_winehuaCameraTraceFrame = m_winehuaFrameId;
+    }
+
     if (!winehuaDrawTraceEnabled()
      || m_winehuaFrameId != winehuaRenderTargetDumpFrame())
       return;
@@ -2308,7 +2369,7 @@ namespace dxvk {
       " instances=", instanceCount));
 
     if (this->commitGraphicsState<false, false>()) {
-      if (unlikely(winehuaDrawTraceEnabled()))
+      if (unlikely(winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()))
         this->winehuaTraceDraw("draw", str::format(
           "vertexCount=", vertexCount,
           " instanceCount=", instanceCount,
@@ -2448,7 +2509,7 @@ namespace dxvk {
     if (this->commitGraphicsState<false, true>()) {
       auto descriptor = m_state.id.argBuffer.getDescriptor();
 
-      if (unlikely(winehuaDrawTraceEnabled()))
+      if (unlikely(winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()))
         this->winehuaTraceDraw("drawIndirect", str::format(
           "buffer=0x", std::hex, descriptor.buffer.buffer,
           " offset=", std::dec, descriptor.buffer.offset + offset,
@@ -2476,7 +2537,7 @@ namespace dxvk {
       auto argDescriptor = m_state.id.argBuffer.getDescriptor();
       auto cntDescriptor = m_state.id.cntBuffer.getDescriptor();
 
-      if (unlikely(winehuaDrawTraceEnabled()))
+      if (unlikely(winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()))
         this->winehuaTraceDraw("drawIndirectCount", str::format(
           "argBuffer=0x", std::hex, argDescriptor.buffer.buffer,
           " argOffset=", std::dec, argDescriptor.buffer.offset + offset,
@@ -2510,7 +2571,7 @@ namespace dxvk {
       " instances=", instanceCount));
 
     if (this->commitGraphicsState<true, false>()) {
-      if (unlikely(winehuaDrawTraceEnabled()))
+      if (unlikely(winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()))
         this->winehuaTraceDraw("drawIndexed", str::format(
           "indexCount=", indexCount,
           " instanceCount=", instanceCount,
@@ -2538,7 +2599,7 @@ namespace dxvk {
     if (this->commitGraphicsState<true, true>()) {
       auto descriptor = m_state.id.argBuffer.getDescriptor();
 
-      if (unlikely(winehuaDrawTraceEnabled()))
+      if (unlikely(winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()))
         this->winehuaTraceDraw("drawIndexedIndirect", str::format(
           "buffer=0x", std::hex, descriptor.buffer.buffer,
           " offset=", std::dec, descriptor.buffer.offset + offset,
@@ -2566,7 +2627,7 @@ namespace dxvk {
       auto argDescriptor = m_state.id.argBuffer.getDescriptor();
       auto cntDescriptor = m_state.id.cntBuffer.getDescriptor();
 
-      if (unlikely(winehuaDrawTraceEnabled()))
+      if (unlikely(winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()))
         this->winehuaTraceDraw("drawIndexedIndirectCount", str::format(
           "argBuffer=0x", std::hex, argDescriptor.buffer.buffer,
           " argOffset=", std::dec, argDescriptor.buffer.offset + offset,
@@ -2596,7 +2657,7 @@ namespace dxvk {
     if (this->commitGraphicsState<false, false>()) {
       auto physSlice = counterBuffer.getSliceHandle();
 
-      if (unlikely(winehuaDrawTraceEnabled()))
+      if (unlikely(winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()))
         this->winehuaTraceDraw("drawIndirectXfb", str::format(
           "counterBuffer=0x", std::hex, physSlice.handle,
           " counterOffset=", std::dec, physSlice.offset,
@@ -5910,7 +5971,7 @@ namespace dxvk {
     }
 
     if constexpr (BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
-      if (winehuaDrawTraceEnabled()) {
+      if (winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()) {
         m_winehuaDescriptorUpdateSerial++;
         m_winehuaGraphicsBindings.clear();
         m_winehuaGraphicsBindings.reserve(layout->bindingCount());
@@ -6062,7 +6123,7 @@ namespace dxvk {
           : 0;
 
         if constexpr (BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
-          if (winehuaDrawTraceEnabled()) {
+          if (winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()) {
             for (auto& trace : m_winehuaGraphicsBindings) {
               if (trace.resourceSlot == binding.slot
                && trace.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {
@@ -6081,7 +6142,7 @@ namespace dxvk {
       }
 
       if constexpr (BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
-        if (winehuaDrawTraceEnabled()) {
+        if (winehuaDrawTraceEnabled() || winehuaCameraTraceEnabled()) {
           m_winehuaDescriptorBindSerial++;
           if (m_winehuaFrameId == winehuaRenderTargetDumpFrame()) {
             Logger::info(str::format(

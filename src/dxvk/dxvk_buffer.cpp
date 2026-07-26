@@ -30,6 +30,15 @@ namespace dxvk {
       ? MaxBufferSize / m_physSliceStride
       : 1;
 
+    m_fifoSlices = winehuaFifoBufferSlices()
+                && (m_memFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+                && (m_info.usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    if (m_fifoSlices) {
+      static std::atomic<bool> logged = { false };
+      if (!logged.exchange(true))
+        Logger::info("WineHua: FIFO host-visible uniform-buffer slices enabled");
+    }
+
     // Allocate the initial set of buffer slices. Only clear
     // buffer memory if there is more than one slice, since
     // we expect the client api to initialize the first slice.

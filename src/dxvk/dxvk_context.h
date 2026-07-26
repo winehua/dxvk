@@ -1190,6 +1190,7 @@ namespace dxvk {
     uint64_t m_winehuaGeometryBytes = 0;
     uint64_t m_winehuaDescriptorUpdateSerial = 0;
     uint64_t m_winehuaDescriptorBindSerial = 0;
+    uint64_t m_winehuaCameraTraceFrame = UINT64_MAX;
     uint32_t m_winehuaPassId = 0;
     uint32_t m_winehuaActivePassId = 0;
     uint32_t m_winehuaFrameDrawId = 0;

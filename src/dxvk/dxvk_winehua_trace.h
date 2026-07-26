@@ -44,37 +44,58 @@ namespace dxvk {
   /* Narrow, opt-in diagnostics for the WineHua sampled-image investigation.
    * The normal DXVK runtime never emits these records. */
   inline bool winehuaSampleTraceEnabled() {
-    static int enabled = -1;
-    if (enabled < 0) {
+    static const bool enabled = [] {
       const char* value = std::getenv("DXVK_WINEHUA_TRACE_SAMPLED");
-      enabled = value && value[0] == '1' ? 1 : 0;
-    }
-    return enabled != 0;
+      return value && value[0] == '1';
+    }();
+    return enabled;
   }
 
-  inline void winehuaSampleTrace(const std::string& message) {
-    if (winehuaSampleTraceEnabled())
-      Logger::info("WineHuaSampled: " + message);
+  inline void winehuaSampleTraceEmit(const std::string& message) {
+    Logger::info("WineHuaSampled: " + message);
   }
 
-  inline void winehuaRenderPassTrace(const std::string& message) {
+  inline bool winehuaRenderPassTraceAllow() {
     if (!winehuaSampleTraceEnabled())
-      return;
+      return false;
 
     static std::atomic<uint32_t> emitted { 0 };
     const uint32_t index = emitted.fetch_add(1, std::memory_order_relaxed);
     if (index < 1024)
-      Logger::info("WineHuaRenderPass: " + message);
-    else if (index == 1024)
+      return true;
+    if (index == 1024)
       Logger::info("WineHuaRenderPass: further records suppressed");
+    return false;
   }
+
+  inline void winehuaRenderPassTraceEmit(const std::string& message) {
+    Logger::info("WineHuaRenderPass: " + message);
+  }
+
+  /* Function arguments are evaluated before entering an inline helper.  Keep
+   * the enable/limit check at the call site so disabled diagnostics do not
+   * build formatted strings in draw, barrier, or resource hot paths. */
+#define winehuaSampleTrace(message)                                             \
+  do {                                                                          \
+    if (winehuaSampleTraceEnabled())                                             \
+      winehuaSampleTraceEmit((message));                                         \
+  } while (false)
+
+#define winehuaRenderPassTrace(message)                                         \
+  do {                                                                          \
+    if (winehuaRenderPassTraceAllow())                                           \
+      winehuaRenderPassTraceEmit((message));                                     \
+  } while (false)
 
   /* Render-target capture is deliberately separate from the normal sampled
    * trace. It is enabled for one selected frame only and must never become a
    * product rendering path. */
   inline bool winehuaRenderTargetDumpEnabled() {
-    const char* value = std::getenv("WINEHUA_DXVK_DUMP_RT");
-    return value && value[0] == '1';
+    static const bool enabled = [] {
+      const char* value = std::getenv("WINEHUA_DXVK_DUMP_RT");
+      return value && value[0] == '1';
+    }();
+    return enabled;
   }
 
   inline uint64_t winehuaRenderTargetDumpFrame() {
@@ -97,6 +118,14 @@ namespace dxvk {
       enabled = value && value[0] == '1' ? 1 : 0;
     }
     return enabled != 0;
+  }
+
+  inline bool winehuaCameraTraceEnabled() {
+    static const bool enabled = [] {
+      const char* value = std::getenv("WINEHUA_DXVK_TRACE_CAMERA");
+      return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
   }
 
   inline uint32_t winehuaDrawTracePass() {
@@ -273,65 +302,116 @@ namespace dxvk {
   }
 
   inline bool winehuaForceSampledGeneral() {
-    const char* value = std::getenv("DXVK_WINEHUA_FORCE_SAMPLED_GENERAL");
-    return value && value[0] == '1';
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_FORCE_SAMPLED_GENERAL");
+      return value && value[0] == '1';
+    }();
+    return enabled;
   }
 
   inline bool winehuaCommandQueryReset() {
-    const char* value = std::getenv("DXVK_WINEHUA_COMMAND_QUERY_RESET");
-    return value && value[0] == '1';
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_COMMAND_QUERY_RESET");
+      return value && value[0] == '1';
+    }();
+    return enabled;
   }
 
   inline bool winehuaQueryTraceEnabled() {
-    const char* value = std::getenv("DXVK_WINEHUA_TRACE_QUERY");
-    return value && value[0] == '1';
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_TRACE_QUERY");
+      return value && value[0] == '1';
+    }();
+    return enabled;
   }
 
-  inline void winehuaQueryTrace(const std::string& message) {
+  inline bool winehuaQueryTraceAllow() {
     if (!winehuaQueryTraceEnabled())
-      return;
+      return false;
 
     static std::atomic<uint32_t> emitted { 0 };
     const uint32_t index = emitted.fetch_add(1, std::memory_order_relaxed);
     if (index < 512)
-      Logger::info("WineHuaQuery: " + message);
-    else if (index == 512)
+      return true;
+    if (index == 512)
       Logger::info("WineHuaQuery: further records suppressed");
+    return false;
+  }
+
+  inline void winehuaQueryTraceEmit(const std::string& message) {
+    Logger::info("WineHuaQuery: " + message);
   }
 
   /* Bounded startup-flow diagnostics. These are deliberately opt-in because
    * shader and pipeline creation can happen on multiple worker threads. */
   inline bool winehuaFlowTraceEnabled() {
-    const char* value = std::getenv("DXVK_WINEHUA_TRACE_FLOW");
-    return value && value[0] == '1';
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_TRACE_FLOW");
+      return value && value[0] == '1';
+    }();
+    return enabled;
   }
 
-  inline void winehuaFlowTrace(const std::string& message) {
+  inline bool winehuaFlowTraceAllow() {
     if (!winehuaFlowTraceEnabled())
-      return;
+      return false;
 
     static std::atomic<uint32_t> emitted { 0 };
     const uint32_t index = emitted.fetch_add(1, std::memory_order_relaxed);
     if (index < 4096)
-      Logger::info("WineHuaFlow: " + message);
-    else if (index == 4096)
+      return true;
+    if (index == 4096)
       Logger::info("WineHuaFlow: further records suppressed");
+    return false;
   }
 
+  inline void winehuaFlowTraceEmit(const std::string& message) {
+    Logger::info("WineHuaFlow: " + message);
+  }
+
+#define winehuaQueryTrace(message)                                              \
+  do {                                                                          \
+    if (winehuaQueryTraceAllow())                                               \
+      winehuaQueryTraceEmit((message));                                         \
+  } while (false)
+
+#define winehuaFlowTrace(message)                                               \
+  do {                                                                          \
+    if (winehuaFlowTraceAllow())                                                \
+      winehuaFlowTraceEmit((message));                                          \
+  } while (false)
+
   inline bool winehuaFlushDynamicMapped() {
-    const char* value = std::getenv("DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED");
-    return value && value[0] == '1';
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_FLUSH_DYNAMIC_MAPPED");
+      return value && value[0] == '1';
+    }();
+    return enabled;
   }
 
   inline bool winehuaPreciseShadowEnabled() {
-    const char* value = std::getenv("DXVK_WINEHUA_PRECISE_SHADOW");
-    return value && value[0] == '1';
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_PRECISE_SHADOW");
+      return value && value[0] == '1';
+    }();
+    return enabled;
+  }
+
+  inline bool winehuaFifoBufferSlices() {
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_FIFO_BUFFER_SLICES");
+      return value && value[0] == '1';
+    }();
+    return enabled;
   }
 
   inline bool winehuaForceHeavenPass2DepthAlways() {
-    const char* value = std::getenv(
-      "WINEHUA_DXVK_FORCE_HEAVEN_PASS2_DEPTH_ALWAYS");
-    return value && value[0] == '1';
+    static const bool enabled = [] {
+      const char* value = std::getenv(
+        "WINEHUA_DXVK_FORCE_HEAVEN_PASS2_DEPTH_ALWAYS");
+      return value && value[0] == '1';
+    }();
+    return enabled;
   }
 
 }

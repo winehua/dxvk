@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 
@@ -239,6 +240,8 @@ namespace dxvk {
       if (unlikely(m_freeSlices.empty())) {
         std::unique_lock<sync::Spinlock> swapLock(m_swapMutex);
         std::swap(m_freeSlices, m_nextSlices);
+        if (m_fifoSlices)
+          std::reverse(m_freeSlices.begin(), m_freeSlices.end());
       }
 
       // If there are still no slices available, create a new
@@ -308,6 +311,7 @@ namespace dxvk {
     sync::Spinlock          m_freeMutex;
 
     uint32_t                m_lazyAlloc = false;
+    bool                    m_fifoSlices = false;
     VkDeviceSize            m_physSliceLength   = 0;
     VkDeviceSize            m_physSliceStride   = 0;
     VkDeviceSize            m_physSliceCount    = 1;
