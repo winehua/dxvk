@@ -200,6 +200,7 @@ namespace dxvk::vk {
 
     uint32_t m_imageIndex = 0;
     uint32_t m_frameIndex = 0;
+    uint64_t m_winehuaPresentSequence = 0;
 
     VkResult m_acquireStatus = VK_NOT_READY;
 

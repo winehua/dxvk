@@ -128,6 +128,14 @@ namespace dxvk {
     return enabled;
   }
 
+  inline bool winehuaPresentImageTraceEnabled() {
+    static const bool enabled = [] {
+      const char* value = std::getenv("WINEHUA_DXVK_TRACE_PRESENT_IMAGE");
+      return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+  }
+
   inline uint32_t winehuaDrawTracePass() {
     static uint32_t pass = UINT32_MAX;
     static bool initialized = false;

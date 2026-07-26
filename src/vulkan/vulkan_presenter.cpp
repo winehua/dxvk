@@ -1,8 +1,18 @@
 #include "vulkan_presenter.h"
 
 #include "../dxvk/dxvk_format.h"
+#include "../dxvk/dxvk_winehua_trace.h"
 
 namespace dxvk::vk {
+
+  template<typename T>
+  static uint64_t winehuaHandleValue(T handle) {
+#if VK_USE_64_BIT_PTR_DEFINES
+    return reinterpret_cast<uintptr_t>(handle);
+#else
+    return uint64_t(handle);
+#endif
+  }
 
   Presenter::Presenter(
           HWND            window,
@@ -51,6 +61,18 @@ namespace dxvk::vk {
       m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
         m_swapchain, std::numeric_limits<uint64_t>::max(),
         sync.acquire, VK_NULL_HANDLE, &m_imageIndex);
+
+      if (winehuaPresentImageTraceEnabled()) {
+        const uint64_t image = m_imageIndex < m_images.size()
+          ? winehuaHandleValue(m_images[m_imageIndex].image) : 0;
+        Logger::info(str::format(
+          "WineHuaPresentImage: layer=dxvk event=acquire sequence=",
+          m_winehuaPresentSequence + 1,
+          " swapchain=0x", std::hex, winehuaHandleValue(m_swapchain),
+          " index=", std::dec, m_imageIndex,
+          " image=0x", std::hex, image,
+          " status=", std::dec, m_acquireStatus));
+      }
     }
     
     if (m_acquireStatus != VK_SUCCESS && m_acquireStatus != VK_SUBOPTIMAL_KHR)
@@ -63,6 +85,7 @@ namespace dxvk::vk {
 
   VkResult Presenter::presentImage() {
     PresenterSync sync = m_semaphores.at(m_frameIndex);
+    const uint64_t presentSequence = ++m_winehuaPresentSequence;
 
     VkPresentInfoKHR info;
     info.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -73,6 +96,16 @@ namespace dxvk::vk {
     info.pSwapchains        = &m_swapchain;
     info.pImageIndices      = &m_imageIndex;
     info.pResults           = nullptr;
+
+    if (winehuaPresentImageTraceEnabled()) {
+      Logger::info(str::format(
+        "WineHuaPresentImage: layer=dxvk event=present sequence=",
+        presentSequence,
+        " swapchain=0x", std::hex, winehuaHandleValue(m_swapchain),
+        " index=", std::dec, m_imageIndex,
+        " image=0x", std::hex,
+        winehuaHandleValue(m_images.at(m_imageIndex).image)));
+    }
 
     VkResult status = m_vkd->vkQueuePresentKHR(m_device.queue, &info);
 
@@ -89,6 +122,18 @@ namespace dxvk::vk {
     m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
       m_swapchain, std::numeric_limits<uint64_t>::max(),
       sync.acquire, VK_NULL_HANDLE, &m_imageIndex);
+
+    if (winehuaPresentImageTraceEnabled()) {
+      const uint64_t image = m_imageIndex < m_images.size()
+        ? winehuaHandleValue(m_images[m_imageIndex].image) : 0;
+      Logger::info(str::format(
+        "WineHuaPresentImage: layer=dxvk event=acquire sequence=",
+        m_winehuaPresentSequence + 1,
+        " swapchain=0x", std::hex, winehuaHandleValue(m_swapchain),
+        " index=", std::dec, m_imageIndex,
+        " image=0x", std::hex, image,
+        " status=", std::dec, m_acquireStatus));
+    }
 
     bool vsync = m_info.presentMode == VK_PRESENT_MODE_FIFO_KHR
               || m_info.presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
@@ -197,6 +242,14 @@ namespace dxvk::vk {
 
     for (uint32_t i = 0; i < m_info.imageCount; i++) {
       m_images[i].image = images[i];
+
+      if (winehuaPresentImageTraceEnabled()) {
+        Logger::info(str::format(
+          "WineHuaPresentImage: layer=dxvk event=image-map swapchain=0x",
+          std::hex, winehuaHandleValue(m_swapchain),
+          " index=", std::dec, i,
+          " image=0x", std::hex, winehuaHandleValue(images[i])));
+      }
 
       VkImageViewCreateInfo viewInfo;
       viewInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
