@@ -311,7 +311,7 @@ namespace dxvk {
         DxvkBufferSliceHandle slice = cDstBuffer->allocSlice();
         std::memcpy(slice.mapPtr, cDataSlice.ptr(), cDataSlice.length());
         if (winehuaFlushDynamicMapped())
-          cDstBuffer->flushMappedSlice(slice);
+          ctx->flushMappedBuffer(cDstBuffer, slice);
         ctx->invalidateBuffer(cDstBuffer, slice);
       });
     }

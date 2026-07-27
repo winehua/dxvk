@@ -113,6 +113,21 @@ namespace dxvk {
   }
 
 
+  VkResult DxvkContext::flushMappedBuffer(
+    const Rc<DxvkBuffer>&          buffer,
+    const DxvkBufferSliceHandle&   slice) {
+    return buffer->flushMappedSlice(slice, m_cmd.operator->());
+  }
+
+
+  VkResult DxvkContext::flushMappedImage(
+    const Rc<DxvkImage>&           image,
+          VkDeviceSize             offset,
+          VkDeviceSize             length) {
+    return image->flushMappedRange(offset, length, m_cmd.operator->());
+  }
+
+
   void DxvkContext::winehuaTracePresentCopy(
           uint64_t              frameId,
           uint32_t              destinationIndex,
@@ -3417,7 +3432,7 @@ namespace dxvk {
       extent3D, formatInfo->elementSize,
       pitchPerRow, pitchPerLayer);
     if (winehuaFlushDynamicMapped())
-      tmpBuffer->flushMappedSlice(tmpBuffer->getSliceHandle());
+      this->flushMappedBuffer(tmpBuffer, tmpBuffer->getSliceHandle());
     
     copyPackedBufferToDepthStencilImage(
       image, subresources, imageOffset, imageExtent,
@@ -3435,7 +3450,7 @@ namespace dxvk {
     auto stagingHandle = stagingSlice.getSliceHandle();
     std::memcpy(stagingHandle.mapPtr, data, bufferSlice.length);
     if (winehuaFlushDynamicMapped())
-      stagingSlice.buffer()->flushMappedSlice(stagingHandle);
+      this->flushMappedBuffer(stagingSlice.buffer(), stagingHandle);
 
     VkBufferCopy region;
     region.srcOffset = stagingHandle.offset;
@@ -4194,7 +4209,7 @@ namespace dxvk {
         util::packImageData(stagingHandle.mapPtr, layerData,
           blockCount, elementSize, rowPitch, slicePitch);
         if (winehuaFlushDynamicMapped())
-          stagingSlice.buffer()->flushMappedSlice(stagingHandle);
+          this->flushMappedBuffer(stagingSlice.buffer(), stagingHandle);
 
         auto subresource = imageSubresource;
         subresource.aspectMask = aspect;

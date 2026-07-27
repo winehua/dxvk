@@ -95,6 +95,10 @@ namespace dxvk {
     VkResult submit(
             VkSemaphore     waitSemaphore,
             VkSemaphore     wakeSemaphore);
+
+    VkResult queueWineHuaMappedFlush(
+            Rc<DxvkResource>          resource,
+      const VkMappedMemoryRange&      range);
     
     /**
      * \brief Synchronizes command buffer execution
@@ -834,6 +838,11 @@ namespace dxvk {
     }
 
   private:
+
+    struct WineHuaMappedFlush {
+      Rc<DxvkResource>     resource;
+      VkMappedMemoryRange range;
+    };
     
     DxvkDevice*         m_device;
     Rc<vk::DeviceFn>    m_vkd;
@@ -860,6 +869,8 @@ namespace dxvk {
     DxvkStatCounters    m_statCounters;
     DxvkQueueSubmission m_submission;
 
+    std::vector<WineHuaMappedFlush> m_winehuaMappedFlushes;
+
     uint64_t             m_winehuaRecordingId = 0;
     std::vector<uint64_t> m_winehuaFrames;
     bool                 m_winehuaPresentCopyValid = false;
@@ -883,6 +894,8 @@ namespace dxvk {
             VkQueue               queue,
             VkFence               fence,
       const DxvkQueueSubmission&  info);
+
+    VkResult flushWineHuaMappedFlushes();
     
   };
   

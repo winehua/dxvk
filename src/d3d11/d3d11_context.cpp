@@ -3180,12 +3180,12 @@ namespace dxvk {
     std::memcpy(slice.mapPtr,
       m_samplerEmulationData[stageId].data(),
       sizeof(SamplerEmulationStageData));
-    buffer->flushMappedSlice(slice);
 
     EmitCs([
       cBuffer = buffer,
       cSlice  = slice
     ] (DxvkContext* ctx) {
+      ctx->flushMappedBuffer(cBuffer, cSlice);
       ctx->invalidateBuffer(cBuffer, cSlice);
       ctx->bindResourceBuffer(
         computeConstantBufferBinding(ShaderStage, 15),
@@ -3757,13 +3757,14 @@ namespace dxvk {
       // write directly to a staging buffer and dispatch a copy
       DxvkBufferSlice stagingSlice = AllocStagingBuffer(Length);
       std::memcpy(stagingSlice.mapPtr(0), pSrcData, Length);
-      if (winehuaFlushDynamicMapped())
-        stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle());
 
       EmitCs([
         cStagingSlice = std::move(stagingSlice),
         cBufferSlice  = std::move(bufferSlice)
       ] (DxvkContext* ctx) {
+        if (winehuaFlushDynamicMapped())
+          ctx->flushMappedBuffer(
+            cStagingSlice.buffer(), cStagingSlice.getSliceHandle());
         ctx->copyBuffer(
           cBufferSlice.buffer(),
           cBufferSlice.offset(),
@@ -3831,8 +3832,6 @@ namespace dxvk {
 
       auto stagingSlice = AllocStagingBuffer(decoded.data.size());
       std::memcpy(stagingSlice.mapPtr(0), decoded.data.data(), decoded.data.size());
-      if (winehuaFlushDynamicMapped())
-        stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle());
       UpdateImage(pDstTexture, &subresource, offset, extent, std::move(stagingSlice));
       return;
     }
@@ -3843,8 +3842,6 @@ namespace dxvk {
       pSrcData, SrcRowPitch, SrcDepthPitch, 0, 0,
       pDstTexture->GetVkImageType(), extent, 1,
       formatInfo, formatInfo->aspectMask);
-    if (winehuaFlushDynamicMapped())
-      stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle());
 
     UpdateImage(pDstTexture, &subresource,
       offset, extent, std::move(stagingSlice));
@@ -3858,6 +3855,15 @@ namespace dxvk {
           VkExtent3D                        DstExtent,
           DxvkBufferSlice                   StagingBuffer) {
     bool dstIsImage = pDstTexture->GetMapMode() != D3D11_COMMON_TEXTURE_MAP_MODE_STAGING;
+
+    if (winehuaFlushDynamicMapped()) {
+      EmitCs([
+        cStagingSlice = StagingBuffer
+      ] (DxvkContext* ctx) {
+        ctx->flushMappedBuffer(
+          cStagingSlice.buffer(), cStagingSlice.getSliceHandle());
+      });
+    }
 
     uint32_t dstSubresource = D3D11CalcSubresource(pDstSubresource->mipLevel,
       pDstSubresource->arrayLayer, pDstTexture->Desc()->MipLevels);

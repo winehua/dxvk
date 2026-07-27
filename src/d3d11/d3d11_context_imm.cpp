@@ -363,8 +363,14 @@ namespace dxvk {
         auto buffer = static_cast<D3D11Buffer*>(pResource);
         const D3D11_MAP mapType = buffer->GetMapType();
         buffer->SetMapType(D3D11_MAP(~0u));
-        if (mapType != D3D11_MAP(~0u) && mapType != D3D11_MAP_READ)
-          buffer->GetBuffer()->flushMappedSlice(buffer->GetMappedSlice());
+        if (mapType != D3D11_MAP(~0u) && mapType != D3D11_MAP_READ) {
+          EmitCs([
+            cBuffer = buffer->GetBuffer(),
+            cSlice  = buffer->GetMappedSlice()
+          ] (DxvkContext* ctx) {
+            ctx->flushMappedBuffer(cBuffer, cSlice);
+          });
+        }
       }
     }
 
@@ -756,11 +762,22 @@ namespace dxvk {
       const auto formatInfo = imageFormatInfo(pResource->GetPackedFormat());
       const auto layout = pResource->GetSubresourceLayout(
         formatInfo->aspectMask, Subresource);
-      if (pResource->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_DIRECT)
-        pResource->GetImage()->flushMappedRange(layout.Offset, layout.Size);
-      else
-        pResource->GetMappedBuffer(Subresource)->flushMappedSlice(
-          pResource->GetMappedSlice(Subresource));
+      if (pResource->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_DIRECT) {
+        EmitCs([
+          cImage  = pResource->GetImage(),
+          cOffset = layout.Offset,
+          cLength = layout.Size
+        ] (DxvkContext* ctx) {
+          ctx->flushMappedImage(cImage, cOffset, cLength);
+        });
+      } else {
+        EmitCs([
+          cBuffer = pResource->GetMappedBuffer(Subresource),
+          cSlice  = pResource->GetMappedSlice(Subresource)
+        ] (DxvkContext* ctx) {
+          ctx->flushMappedBuffer(cBuffer, cSlice);
+        });
+      }
     }
 
     if ((mapType != D3D11_MAP_READ) &&
@@ -803,8 +820,14 @@ namespace dxvk {
 
     std::memcpy(reinterpret_cast<char*>(slice.mapPtr) + Offset, pSrcData, Length);
 
-    if (winehuaFlushDynamicMapped())
-      pDstBuffer->GetBuffer()->flushMappedSlice(slice);
+    if (winehuaFlushDynamicMapped()) {
+      EmitCs([
+        cBuffer = pDstBuffer->GetBuffer(),
+        cSlice  = slice
+      ] (DxvkContext* ctx) {
+        ctx->flushMappedBuffer(cBuffer, cSlice);
+      });
+    }
   }
 
 

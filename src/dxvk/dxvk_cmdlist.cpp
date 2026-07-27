@@ -1,12 +1,17 @@
 #include "dxvk_cmdlist.h"
 #include "dxvk_device.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <functional>
+#include <limits>
 #include <process.h>
 
 namespace dxvk {
 
   static std::atomic<uint64_t> g_winehuaRecordingId = { 0 };
+  static std::atomic<bool> g_winehuaMappedFlushBatchLogged = { false };
     
   DxvkCommandList::DxvkCommandList(DxvkDevice* device)
   : m_device        (device),
@@ -90,6 +95,10 @@ namespace dxvk {
     const auto& graphics = m_device->queues().graphics;
     const auto& transfer = m_device->queues().transfer;
 
+    const VkResult mappedFlushResult = flushWineHuaMappedFlushes();
+    if (mappedFlushResult != VK_SUCCESS)
+      return mappedFlushResult;
+
     m_submission.reset();
 
     if (m_cmdBuffersUsed.test(DxvkCmdBuffer::SdmaBuffer)) {
@@ -158,6 +167,92 @@ namespace dxvk {
     }
 
     return submitToQueue(graphics.queueHandle, m_fence, m_submission);
+  }
+
+
+  VkResult DxvkCommandList::queueWineHuaMappedFlush(
+          Rc<DxvkResource>          resource,
+    const VkMappedMemoryRange&      range) {
+    if (!g_winehuaMappedFlushBatchLogged.exchange(true))
+      Logger::info("WineHua: command-list-owned mapped flush batching enabled");
+
+    WineHuaMappedFlush pending;
+    pending.resource = std::move(resource);
+    pending.range = range;
+    pending.range.pNext = nullptr;
+    m_winehuaMappedFlushes.push_back(std::move(pending));
+    return VK_SUCCESS;
+  }
+
+
+  VkResult DxvkCommandList::flushWineHuaMappedFlushes() {
+    if (m_winehuaMappedFlushes.empty())
+      return VK_SUCCESS;
+
+    const auto memoryLess = [] (VkDeviceMemory a, VkDeviceMemory b) {
+      return std::less<VkDeviceMemory>()(a, b);
+    };
+
+    std::sort(m_winehuaMappedFlushes.begin(), m_winehuaMappedFlushes.end(),
+      [&memoryLess] (const WineHuaMappedFlush& a,
+                     const WineHuaMappedFlush& b) {
+        if (memoryLess(a.range.memory, b.range.memory))
+          return true;
+        if (memoryLess(b.range.memory, a.range.memory))
+          return false;
+        return a.range.offset < b.range.offset;
+      });
+
+    const auto rangeEnd = [] (const VkMappedMemoryRange& range) {
+      if (range.size == VK_WHOLE_SIZE
+       || range.size > std::numeric_limits<VkDeviceSize>::max() - range.offset)
+        return std::numeric_limits<VkDeviceSize>::max();
+      return range.offset + range.size;
+    };
+
+    constexpr uint32_t MaxRangesPerCall = 256;
+    std::array<VkMappedMemoryRange, MaxRangesPerCall> ranges;
+    uint32_t rangeCount = 0;
+
+    const auto flushRanges = [&] () {
+      if (!rangeCount)
+        return VK_SUCCESS;
+
+      const VkResult result = m_vkd->vkFlushMappedMemoryRanges(
+        m_vkd->device(), rangeCount, ranges.data());
+      rangeCount = 0;
+      return result;
+    };
+
+    for (const auto& entry : m_winehuaMappedFlushes) {
+      const auto& range = entry.range;
+      if (!range.size)
+        continue;
+
+      if (rangeCount) {
+        auto& previous = ranges[rangeCount - 1];
+        const bool sameMemory = !memoryLess(previous.memory, range.memory)
+                             && !memoryLess(range.memory, previous.memory);
+        const VkDeviceSize previousEnd = rangeEnd(previous);
+        if (sameMemory && range.offset <= previousEnd) {
+          const VkDeviceSize mergedEnd = std::max(previousEnd, rangeEnd(range));
+          previous.size = mergedEnd == std::numeric_limits<VkDeviceSize>::max()
+            ? VK_WHOLE_SIZE
+            : mergedEnd - previous.offset;
+          continue;
+        }
+      }
+
+      if (rangeCount == MaxRangesPerCall) {
+        const VkResult result = flushRanges();
+        if (result != VK_SUCCESS)
+          return result;
+      }
+
+      ranges[rangeCount++] = range;
+    }
+
+    return flushRanges();
   }
   
   
@@ -232,6 +327,8 @@ namespace dxvk {
     // Less important stuff
     m_signalTracker.reset();
     m_statCounters.reset();
+
+    m_winehuaMappedFlushes.clear();
 
     m_waitSemaphores.clear();
     m_signalSemaphores.clear();

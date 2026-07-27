@@ -60,6 +60,15 @@ namespace dxvk {
      */
     void flushCommandList();
 
+    VkResult flushMappedBuffer(
+      const Rc<DxvkBuffer>&          buffer,
+      const DxvkBufferSliceHandle&   slice);
+
+    VkResult flushMappedImage(
+      const Rc<DxvkImage>&           image,
+            VkDeviceSize             offset,
+            VkDeviceSize             length);
+
     /**
      * \brief Marks a WineHua frame boundary
      *

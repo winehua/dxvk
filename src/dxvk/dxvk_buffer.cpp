@@ -1,5 +1,6 @@
 #include "dxvk_barrier.h"
 #include "dxvk_buffer.h"
+#include "dxvk_cmdlist.h"
 #include "dxvk_device.h"
 #include "dxvk_winehua_trace.h"
 
@@ -177,7 +178,8 @@ namespace dxvk {
 
 
   VkResult DxvkBuffer::flushMappedSlice(
-    const DxvkBufferSliceHandle& slice) const {
+    const DxvkBufferSliceHandle& slice,
+          DxvkCommandList*       commandList) const {
     const DxvkBufferHandle* backing = nullptr;
 
     if (m_buffer.buffer == slice.handle) {
@@ -205,8 +207,11 @@ namespace dxvk {
     range.offset = (sliceBegin / atom) * atom;
     range.size   = sliceEnd - range.offset;
 
-    VkResult result = m_device->vkd()->vkFlushMappedMemoryRanges(
-      m_device->vkd()->device(), 1, &range);
+    VkResult result = winehuaBatchMappedFlush() && commandList
+      ? commandList->queueWineHuaMappedFlush(
+          Rc<DxvkResource>(const_cast<DxvkBuffer*>(this)), range)
+      : m_device->vkd()->vkFlushMappedMemoryRanges(
+          m_device->vkd()->device(), 1, &range);
 
     winehuaSampleTrace(str::format(
       "dynamic-mapped-flush buffer=0x", std::hex, slice.handle,

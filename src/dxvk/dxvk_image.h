@@ -8,6 +8,8 @@
 
 namespace dxvk {
 
+  class DxvkCommandList;
+
   class DxvkImageView;
   
   /**
@@ -199,7 +201,8 @@ namespace dxvk {
 
     VkResult flushMappedRange(
             VkDeviceSize          offset,
-            VkDeviceSize          length) const;
+            VkDeviceSize          length,
+            DxvkCommandList*      commandList = nullptr) const;
 
     VkResult invalidateMappedRange(
             VkDeviceSize          offset,
@@ -345,7 +348,8 @@ namespace dxvk {
     VkResult syncMappedRange(
             VkDeviceSize          offset,
             VkDeviceSize          length,
-            bool                  invalidate) const;
+            bool                  invalidate,
+            DxvkCommandList*      commandList) const;
     
     bool canShareImage(const VkImageCreateInfo&  createInfo, const DxvkSharedHandleInfo& sharingInfo) const;
 

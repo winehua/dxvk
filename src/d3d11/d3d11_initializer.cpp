@@ -132,7 +132,8 @@ namespace dxvk {
         bufferSlice.length());
     }
     if (winehuaFlushDynamicMapped())
-      bufferSlice.buffer()->flushMappedSlice(bufferSlice.getSliceHandle());
+      m_context->flushMappedBuffer(
+        bufferSlice.buffer(), bufferSlice.getSliceHandle());
   }
 
 
@@ -214,7 +215,8 @@ namespace dxvk {
               pInitialData[id].pSysMem, pInitialData[id].SysMemPitch, pInitialData[id].SysMemSlicePitch,
               0, 0, pTexture->GetVkImageType(), mipLevelExtent, 1, formatInfo, formatInfo->aspectMask);
             if (winehuaFlushDynamicMapped())
-              mappedBuffer->flushMappedSlice(mappedBuffer->getSliceHandle());
+              m_context->flushMappedBuffer(
+                mappedBuffer, mappedBuffer->getSliceHandle());
           }
         }
       }
@@ -240,7 +242,7 @@ namespace dxvk {
           auto buffer = pTexture->GetMappedBuffer(i);
           std::memset(buffer->mapPtr(0), 0, buffer->info().size);
           if (winehuaFlushDynamicMapped())
-            buffer->flushMappedSlice(buffer->getSliceHandle());
+            m_context->flushMappedBuffer(buffer, buffer->getSliceHandle());
         }
       }
     }

@@ -12,6 +12,8 @@
 
 namespace dxvk {
 
+  class DxvkCommandList;
+
   /**
    * \brief Buffer create info
    * 
@@ -290,7 +292,9 @@ namespace dxvk {
      * The opt-in compatibility path needs an explicit Vulkan flush to
      * publish CPU writes before an older fence can refresh the shadow map.
      */
-    VkResult flushMappedSlice(const DxvkBufferSliceHandle& slice) const;
+    VkResult flushMappedSlice(
+      const DxvkBufferSliceHandle& slice,
+            DxvkCommandList*       commandList = nullptr) const;
 
     VkResult beginMappedSliceWrite(const DxvkBufferSliceHandle& slice) const;
 

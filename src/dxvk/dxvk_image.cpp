@@ -1,5 +1,6 @@
 #include "dxvk_image.h"
 
+#include "dxvk_cmdlist.h"
 #include "dxvk_device.h"
 #include "dxvk_winehua_trace.h"
 
@@ -203,22 +204,24 @@ namespace dxvk {
 
   VkResult DxvkImage::flushMappedRange(
           VkDeviceSize offset,
-          VkDeviceSize length) const {
-    return syncMappedRange(offset, length, false);
+          VkDeviceSize length,
+          DxvkCommandList* commandList) const {
+    return syncMappedRange(offset, length, false, commandList);
   }
 
 
   VkResult DxvkImage::invalidateMappedRange(
           VkDeviceSize offset,
           VkDeviceSize length) const {
-    return syncMappedRange(offset, length, true);
+    return syncMappedRange(offset, length, true, nullptr);
   }
 
 
   VkResult DxvkImage::syncMappedRange(
           VkDeviceSize offset,
           VkDeviceSize length,
-          bool         invalidate) const {
+          bool         invalidate,
+          DxvkCommandList* commandList) const {
     if (!m_image.memory || offset >= m_image.memory.length())
       return VK_ERROR_MEMORY_MAP_FAILED;
 
@@ -237,8 +240,12 @@ namespace dxvk {
     range.offset = (rangeBegin / atom) * atom;
     range.size   = rangeEnd - range.offset;
 
-    return invalidate
-      ? m_vkd->vkInvalidateMappedMemoryRanges(m_vkd->device(), 1, &range)
+    if (invalidate)
+      return m_vkd->vkInvalidateMappedMemoryRanges(m_vkd->device(), 1, &range);
+
+    return winehuaBatchMappedFlush() && commandList
+      ? commandList->queueWineHuaMappedFlush(
+          Rc<DxvkResource>(const_cast<DxvkImage*>(this)), range)
       : m_vkd->vkFlushMappedMemoryRanges(m_vkd->device(), 1, &range);
   }
 
