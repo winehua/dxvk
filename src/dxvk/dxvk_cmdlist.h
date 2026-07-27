@@ -793,6 +793,20 @@ namespace dxvk {
       return m_execBuffer;
     }
 
+    void winehuaTracePresentCopy(
+            uint64_t              frameId,
+            uint32_t              destinationIndex,
+            VkImage               sourceImage,
+            VkImage               destinationImage,
+            VkSampleCountFlagBits sourceSamples) {
+      m_winehuaPresentCopyValid = true;
+      m_winehuaPresentCopyFrame = frameId;
+      m_winehuaPresentCopyDestinationIndex = destinationIndex;
+      m_winehuaPresentCopySourceImage = sourceImage;
+      m_winehuaPresentCopyDestinationImage = destinationImage;
+      m_winehuaPresentCopySourceSamples = sourceSamples;
+    }
+
     void winehuaTraceFrame(uint64_t frameId) {
       if (m_winehuaFrames.empty() || m_winehuaFrames.back() != frameId)
         m_winehuaFrames.push_back(frameId);
@@ -848,6 +862,12 @@ namespace dxvk {
 
     uint64_t             m_winehuaRecordingId = 0;
     std::vector<uint64_t> m_winehuaFrames;
+    bool                 m_winehuaPresentCopyValid = false;
+    uint64_t             m_winehuaPresentCopyFrame = 0;
+    uint32_t             m_winehuaPresentCopyDestinationIndex = 0;
+    VkImage              m_winehuaPresentCopySourceImage = VK_NULL_HANDLE;
+    VkImage              m_winehuaPresentCopyDestinationImage = VK_NULL_HANDLE;
+    VkSampleCountFlagBits m_winehuaPresentCopySourceSamples = VK_SAMPLE_COUNT_1_BIT;
 
     std::vector<DxvkFenceValuePair> m_waitSemaphores;
     std::vector<DxvkFenceValuePair> m_signalSemaphores;

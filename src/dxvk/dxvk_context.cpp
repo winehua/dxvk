@@ -113,6 +113,20 @@ namespace dxvk {
   }
 
 
+  void DxvkContext::winehuaTracePresentCopy(
+          uint64_t              frameId,
+          uint32_t              destinationIndex,
+          VkImage               sourceImage,
+          VkImage               destinationImage,
+          VkSampleCountFlagBits sourceSamples) {
+    if (winehuaPresentImageTraceEnabled() && m_cmd != nullptr) {
+      m_cmd->winehuaTracePresentCopy(
+        frameId, destinationIndex, sourceImage,
+        destinationImage, sourceSamples);
+    }
+  }
+
+
   void DxvkContext::winehuaFrameBoundary(uint64_t nextFrameId) {
     if (winehuaRenderTargetDumpEnabled()) {
       if (m_winehuaFrameId == winehuaRenderTargetDumpFrame())

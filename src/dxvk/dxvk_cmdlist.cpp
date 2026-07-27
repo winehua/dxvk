@@ -128,6 +128,20 @@ namespace dxvk {
         " frameCount=", std::dec, m_winehuaFrames.size(),
         " frames=", frames));
     }
+
+    if (winehuaPresentImageTraceEnabled() && m_winehuaPresentCopyValid) {
+      Logger::info(str::format(
+        "WineHuaPresentCopy: layer=dxvk event=submit",
+        " frame=", m_winehuaPresentCopyFrame,
+        " recording=", m_winehuaRecordingId,
+        " execCmd=0x", std::hex,
+          reinterpret_cast<uintptr_t>(m_execBuffer),
+        " sourceImage=0x", m_winehuaPresentCopySourceImage,
+        " destinationImage=0x", m_winehuaPresentCopyDestinationImage,
+        " destinationIndex=", std::dec,
+          m_winehuaPresentCopyDestinationIndex,
+        " sourceSamples=", uint32_t(m_winehuaPresentCopySourceSamples)));
+    }
     
     if (waitSemaphore)
       m_submission.addWaitSemaphore(waitSemaphore, 0, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
@@ -184,7 +198,9 @@ namespace dxvk {
     m_cmdBuffersUsed = DxvkCmdBuffer::ExecBuffer;
 
     m_winehuaFrames.clear();
-    m_winehuaRecordingId = winehuaCameraTraceEnabled()
+    m_winehuaPresentCopyValid = false;
+    m_winehuaRecordingId = (winehuaCameraTraceEnabled()
+                          || winehuaPresentImageTraceEnabled())
       ? g_winehuaRecordingId.fetch_add(1, std::memory_order_relaxed) + 1
       : 0;
   }

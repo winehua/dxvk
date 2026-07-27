@@ -69,6 +69,14 @@ namespace dxvk {
      */
     void winehuaFrameBoundary(
             uint64_t              nextFrameId);
+
+    /** Records identity for the final backbuffer-to-presenter draw. */
+    void winehuaTracePresentCopy(
+            uint64_t              frameId,
+            uint32_t              destinationIndex,
+            VkImage               sourceImage,
+            VkImage               destinationImage,
+            VkSampleCountFlagBits sourceSamples);
     
     /**
      * \brief Begins generating query data

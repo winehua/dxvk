@@ -297,6 +297,12 @@ namespace dxvk {
         m_imageViews.at(imageIndex), VkRect2D(),
         m_swapImageView, VkRect2D());
 
+      m_context->winehuaTracePresentCopy(
+        m_frameId, imageIndex,
+        m_swapImageView->imageHandle(),
+        m_imageViews.at(imageIndex)->imageHandle(),
+        m_swapImageView->imageInfo().sampleCount);
+
       if (m_hud != nullptr)
         m_hud->render(m_context, info.format, info.imageExtent);
       
