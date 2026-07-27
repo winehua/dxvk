@@ -12,6 +12,14 @@ namespace dxvk {
 
   static std::atomic<uint64_t> g_winehuaRecordingId = { 0 };
   static std::atomic<bool> g_winehuaMappedFlushBatchLogged = { false };
+  static std::atomic<uint64_t> g_winehuaMappedFlushLists = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushQueuedRanges = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushEmittedRanges = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushCalls = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushQueuedBytes = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushEmittedBytes = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushWholeRanges = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushFailures = { 0 };
     
   DxvkCommandList::DxvkCommandList(DxvkDevice* device)
   : m_device        (device),
@@ -189,6 +197,14 @@ namespace dxvk {
     if (m_winehuaMappedFlushes.empty())
       return VK_SUCCESS;
 
+    const bool collectStats = winehuaBatchMappedFlushStats();
+    const uint64_t queuedRangeCount = m_winehuaMappedFlushes.size();
+    uint64_t emittedRangeCount = 0;
+    uint64_t flushCallCount = 0;
+    uint64_t queuedBytes = 0;
+    uint64_t emittedBytes = 0;
+    uint64_t wholeRangeCount = 0;
+
     const auto memoryLess = [] (VkDeviceMemory a, VkDeviceMemory b) {
       return std::less<VkDeviceMemory>()(a, b);
     };
@@ -218,6 +234,17 @@ namespace dxvk {
       if (!rangeCount)
         return VK_SUCCESS;
 
+      if (collectStats) {
+        emittedRangeCount += rangeCount;
+        flushCallCount += 1;
+        for (uint32_t i = 0; i < rangeCount; i++) {
+          if (ranges[i].size == VK_WHOLE_SIZE)
+            wholeRangeCount += 1;
+          else
+            emittedBytes += ranges[i].size;
+        }
+      }
+
       const VkResult result = m_vkd->vkFlushMappedMemoryRanges(
         m_vkd->device(), rangeCount, ranges.data());
       rangeCount = 0;
@@ -228,6 +255,9 @@ namespace dxvk {
       const auto& range = entry.range;
       if (!range.size)
         continue;
+
+      if (collectStats && range.size != VK_WHOLE_SIZE)
+        queuedBytes += range.size;
 
       if (rangeCount) {
         auto& previous = ranges[rangeCount - 1];
@@ -245,14 +275,53 @@ namespace dxvk {
 
       if (rangeCount == MaxRangesPerCall) {
         const VkResult result = flushRanges();
-        if (result != VK_SUCCESS)
+        if (result != VK_SUCCESS) {
+          if (collectStats)
+            g_winehuaMappedFlushFailures.fetch_add(1);
           return result;
+        }
       }
 
       ranges[rangeCount++] = range;
     }
 
-    return flushRanges();
+    const VkResult result = flushRanges();
+    if (collectStats) {
+      if (result != VK_SUCCESS)
+        g_winehuaMappedFlushFailures.fetch_add(1);
+
+      const uint64_t lists =
+        g_winehuaMappedFlushLists.fetch_add(1) + 1;
+      const uint64_t queuedRanges =
+        g_winehuaMappedFlushQueuedRanges.fetch_add(queuedRangeCount) +
+        queuedRangeCount;
+      const uint64_t emittedRanges =
+        g_winehuaMappedFlushEmittedRanges.fetch_add(emittedRangeCount) +
+        emittedRangeCount;
+      const uint64_t calls =
+        g_winehuaMappedFlushCalls.fetch_add(flushCallCount) + flushCallCount;
+      const uint64_t totalQueuedBytes =
+        g_winehuaMappedFlushQueuedBytes.fetch_add(queuedBytes) + queuedBytes;
+      const uint64_t totalEmittedBytes =
+        g_winehuaMappedFlushEmittedBytes.fetch_add(emittedBytes) + emittedBytes;
+      const uint64_t wholeRanges =
+        g_winehuaMappedFlushWholeRanges.fetch_add(wholeRangeCount) +
+        wholeRangeCount;
+
+      if (lists <= 8 || !(lists % 120)) {
+        Logger::info(str::format(
+          "WineHuaMappedFlushPerf: lists=", lists,
+          " queued_ranges=", queuedRanges,
+          " emitted_ranges=", emittedRanges,
+          " calls=", calls,
+          " queued_bytes=", totalQueuedBytes,
+          " emitted_bytes=", totalEmittedBytes,
+          " whole_ranges=", wholeRanges,
+          " failures=", g_winehuaMappedFlushFailures.load()));
+      }
+    }
+
+    return result;
   }
   
   

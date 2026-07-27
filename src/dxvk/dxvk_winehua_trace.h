@@ -405,6 +405,15 @@ namespace dxvk {
     return enabled;
   }
 
+  inline bool winehuaBatchMappedFlushStats() {
+    static const bool enabled = [] {
+      const char* value = std::getenv(
+        "DXVK_WINEHUA_BATCH_MAPPED_FLUSH_STATS");
+      return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+  }
+
   inline bool winehuaPreciseShadowEnabled() {
     static const bool enabled = [] {
       const char* value = std::getenv("DXVK_WINEHUA_PRECISE_SHADOW");
