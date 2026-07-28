@@ -3462,6 +3462,19 @@ namespace dxvk {
     const VkImageSubresourceLayers*         pSrcLayers,
           VkOffset3D                        SrcOffset,
           VkExtent3D                        SrcExtent) {
+    // A native RGBA8 SNORM image and an emulated RGBA16F image have different
+    // texel sizes. A raw Vulkan copy would be invalid and could corrupt memory.
+    // Emulated-to-emulated copies remain ordinary GPU image copies. Mixed
+    // copies require an explicit GPU pack/unpack path and are rejected until
+    // that path exists.
+    if (pDstTexture->IsRgba8SnormRtEmulated()
+     != pSrcTexture->IsRgba8SnormRtEmulated()) {
+      static std::atomic<uint32_t> warnings { 0 };
+      if (warnings.fetch_add(1, std::memory_order_relaxed) < 16)
+        Logger::err("WineHua: CopyImage between native and emulated RGBA8 SNORM resources is unsupported");
+      return;
+    }
+
     // Image formats must be size-compatible
     auto dstFormatInfo = imageFormatInfo(pDstTexture->GetPackedFormat());
     auto srcFormatInfo = imageFormatInfo(pSrcTexture->GetPackedFormat());
@@ -3822,16 +3835,24 @@ namespace dxvk {
 
     const bool bcEmulated = formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
                          && !pDstTexture->GetImage()->formatInfo()->flags.test(DxvkFormatFlag::BlockCompressed);
-    if (bcEmulated) {
-      D3D11BcDecodedImage decoded;
-      if (!DecodeD3D11BcImage(packedFormat, extent, pSrcData,
-                              SrcRowPitch, SrcDepthPitch, decoded)) {
-        Logger::err("WineHua: Failed to decompress BC UpdateSubresource data");
+    const bool snormRtEmulated = pDstTexture->IsRgba8SnormRtEmulated();
+    if (snormRtEmulated || bcEmulated) {
+      D3D11CpuImage converted;
+      const bool convertedOk = snormRtEmulated
+        ? ConvertD3D11Rgba8SnormToRgba16Float(
+            extent, pSrcData, SrcRowPitch, SrcDepthPitch, converted)
+        : DecodeD3D11BcImage(
+            packedFormat, extent, pSrcData, SrcRowPitch, SrcDepthPitch, converted);
+
+      if (!convertedOk) {
+        Logger::err(snormRtEmulated
+          ? "WineHua: Failed to convert RGBA8 SNORM UpdateSubresource data"
+          : "WineHua: Failed to decompress BC UpdateSubresource data");
         return;
       }
 
-      auto stagingSlice = AllocStagingBuffer(decoded.data.size());
-      std::memcpy(stagingSlice.mapPtr(0), decoded.data.data(), decoded.data.size());
+      auto stagingSlice = AllocStagingBuffer(converted.data.size());
+      std::memcpy(stagingSlice.mapPtr(0), converted.data.data(), converted.data.size());
       UpdateImage(pDstTexture, &subresource, offset, extent, std::move(stagingSlice));
       return;
     }

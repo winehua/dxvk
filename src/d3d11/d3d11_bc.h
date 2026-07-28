@@ -1,16 +1,9 @@
 #pragma once
 
-#include <vector>
-
 #include "../dxvk/dxvk_include.h"
+#include "d3d11_format_convert.h"
 
 namespace dxvk {
-
-  struct D3D11BcDecodedImage {
-    std::vector<uint8_t> data;
-    VkDeviceSize rowPitch = 0;
-    VkDeviceSize slicePitch = 0;
-  };
 
   /**
    * Decompresses one BC image subresource into the uncompressed Vulkan
@@ -24,6 +17,6 @@ namespace dxvk {
     const void*                    source,
           VkDeviceSize             sourceRowPitch,
           VkDeviceSize             sourceSlicePitch,
-          D3D11BcDecodedImage&     result);
+          D3D11CpuImage&           result);
 
 }

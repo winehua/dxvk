@@ -166,23 +166,32 @@ namespace dxvk {
             const void* uploadData = pInitialData[id].pSysMem;
             VkDeviceSize uploadRowPitch = pInitialData[id].SysMemPitch;
             VkDeviceSize uploadSlicePitch = pInitialData[id].SysMemSlicePitch;
-            D3D11BcDecodedImage decoded;
+            D3D11CpuImage converted;
 
             const bool bcEmulated = formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
                                  && !image->formatInfo()->flags.test(DxvkFormatFlag::BlockCompressed);
-            if (bcEmulated) {
+            const bool snormRtEmulated = pTexture->IsRgba8SnormRtEmulated();
+            if (snormRtEmulated) {
+              if (!ConvertD3D11Rgba8SnormToRgba16Float(
+                    mipLevelExtent, uploadData, uploadRowPitch, uploadSlicePitch,
+                    converted))
+                throw DxvkError("WineHua: Failed to convert initial RGBA8 SNORM texture data");
+              uploadData = converted.data.data();
+              uploadRowPitch = converted.rowPitch;
+              uploadSlicePitch = converted.slicePitch;
+            } else if (bcEmulated) {
               if (!DecodeD3D11BcImage(packedFormat, mipLevelExtent,
                                       uploadData, uploadRowPitch, uploadSlicePitch,
-                                      decoded))
+                                      converted))
                 throw DxvkError("WineHua: Failed to decompress initial BC texture data");
-              uploadData = decoded.data.data();
-              uploadRowPitch = decoded.rowPitch;
-              uploadSlicePitch = decoded.slicePitch;
+              uploadData = converted.data.data();
+              uploadRowPitch = converted.rowPitch;
+              uploadSlicePitch = converted.slicePitch;
             }
 
             m_transferCommands += 1;
-            m_transferMemory   += bcEmulated
-                                ? decoded.data.size()
+            m_transferMemory   += (snormRtEmulated || bcEmulated)
+                                ? converted.data.size()
                                 : pTexture->GetSubresourceLayout(formatInfo->aspectMask, id).Size;
             
             VkImageSubresourceLayers subresourceLayers;

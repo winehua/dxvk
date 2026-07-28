@@ -128,7 +128,7 @@ namespace dxvk {
     const void*                    source,
           VkDeviceSize             sourceRowPitch,
           VkDeviceSize             sourceSlicePitch,
-          D3D11BcDecodedImage&     result) {
+          D3D11CpuImage&           result) {
     const BcFormatInfo info = GetBcFormatInfo(format);
     if (!info.blockBytes || !info.pixelBytes || !source
      || !extent.width || !extent.height || !extent.depth)

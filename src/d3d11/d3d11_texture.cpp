@@ -1,3 +1,5 @@
+#include <cstring>
+
 #include "d3d11_device.h"
 #include "d3d11_gdi.h"
 #include "d3d11_texture.h"
@@ -6,6 +8,37 @@
 #include "../util/util_shared_res.h"
 
 namespace dxvk {
+
+  static bool winehuaFormatTraceEnabled() {
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_TRACE_FORMATS");
+      return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+  }
+
+  static bool winehuaFormatTraceAllow() {
+    if (!winehuaFormatTraceEnabled())
+      return false;
+
+    static std::atomic<uint32_t> emitted { 0 };
+    const uint32_t index = emitted.fetch_add(1, std::memory_order_relaxed);
+    if (index < 256)
+      return true;
+    if (index == 256)
+      Logger::info("WineHuaFormat: further records suppressed");
+    return false;
+  }
+
+  static bool winehuaRgba8SnormRtEmulationEnabled() {
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_EMULATE_RGBA8_SNORM_RT");
+      return value && (!std::strcmp(value, "1")
+                    || !std::strcmp(value, "on")
+                    || !std::strcmp(value, "auto"));
+    }();
+    return enabled;
+  }
   
   D3D11CommonTexture::D3D11CommonTexture(
           ID3D11Resource*             pInterface,
@@ -216,8 +249,53 @@ namespace dxvk {
     imageInfo.usage |= EnableMetaCopyUsage(imageInfo.format, imageInfo.tiling);
     imageInfo.usage |= EnableMetaPackUsage(imageInfo.format, m_desc.CPUAccessFlags);
     
-    // Check if we can actually create the image
-    if (!CheckImageSupport(&imageInfo, imageInfo.tiling)) {
+    // Check if we can actually create the image. Maleoon exposes sampled
+    // R8G8B8A8_SNORM images but not color attachments. For opt-in A/B testing,
+    // keep the D3D format contract and use a renderable floating-point image
+    // that preserves negative values. This is deliberately resource-local;
+    // format capability queries remain truthful and buffers are unaffected.
+    bool imageSupported = CheckImageSupport(&imageInfo, imageInfo.tiling);
+
+    const bool canEmulateRgba8SnormRt =
+         winehuaRgba8SnormRtEmulationEnabled()
+      && m_desc.Format == DXGI_FORMAT_R8G8B8A8_SNORM
+      && m_dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D
+      && m_desc.Usage == D3D11_USAGE_DEFAULT
+      && m_desc.CPUAccessFlags == 0
+      && (m_desc.BindFlags & D3D11_BIND_RENDER_TARGET)
+      && !(m_desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS)
+      && !(m_desc.MiscFlags & (D3D11_RESOURCE_MISC_SHARED
+                             | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX
+                             | D3D11_RESOURCE_MISC_SHARED_NTHANDLE))
+      && vkImage == VK_NULL_HANDLE
+      && !imageInfo.shared;
+
+    if (!imageSupported && canEmulateRgba8SnormRt) {
+      DxvkImageCreateInfo emulatedInfo = imageInfo;
+      emulatedInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+      emulatedInfo.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+      emulatedInfo.viewFormatCount = 0;
+      emulatedInfo.viewFormats = nullptr;
+      emulatedInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+
+      imageSupported = CheckImageSupport(&emulatedInfo, emulatedInfo.tiling);
+      if (!imageSupported) {
+        emulatedInfo.tiling = VK_IMAGE_TILING_LINEAR;
+        imageSupported = CheckImageSupport(&emulatedInfo, emulatedInfo.tiling);
+      }
+
+      if (imageSupported) {
+        imageInfo = emulatedInfo;
+        m_rgba8SnormRtEmulated = true;
+
+        static std::atomic<bool> reported { false };
+        if (!reported.exchange(true, std::memory_order_relaxed)) {
+          Logger::info("WineHuaFormat: emulating DXGI_FORMAT_R8G8B8A8_SNORM render targets with VK_FORMAT_R16G16B16A16_SFLOAT");
+        }
+      }
+    }
+
+    if (!imageSupported) {
       throw DxvkError(str::format(
         "D3D11: Cannot create texture:",
         "\n  Format:  ", m_desc.Format,
@@ -356,6 +434,14 @@ namespace dxvk {
     
     return DXGI_VK_FORMAT_MODE_ANY;
   }
+
+
+  VkFormat D3D11CommonTexture::GetViewFormat(DXGI_FORMAT Format) const {
+    if (m_rgba8SnormRtEmulated && Format == DXGI_FORMAT_R8G8B8A8_SNORM)
+      return VK_FORMAT_R16G16B16A16_SFLOAT;
+
+    return m_device->LookupFormat(Format, GetFormatMode()).Format;
+  }
   
   
   uint32_t D3D11CommonTexture::GetPlaneCount() const {
@@ -369,6 +455,9 @@ namespace dxvk {
     // Check whether the given bind flags are supported
     if ((m_desc.BindFlags & BindFlags) != BindFlags)
       return false;
+
+    if (m_rgba8SnormRtEmulated)
+      return Format == DXGI_FORMAT_R8G8B8A8_SNORM && Plane == 0;
 
     // Check whether the view format is compatible
     DXGI_VK_FORMAT_MODE formatMode = GetFormatMode();
@@ -480,6 +569,59 @@ namespace dxvk {
     VkResult status = adapter->imageFormatProperties(
       pImageInfo->format, pImageInfo->type, Tiling,
       usage, pImageInfo->flags, formatProps);
+
+    const bool traceImageQuery = winehuaFormatTraceAllow();
+
+    if (traceImageQuery) {
+      const VkFormatProperties features = adapter->formatProperties(pImageInfo->format);
+      Logger::info(str::format(
+        "WineHuaFormat: image-query format=", uint32_t(pImageInfo->format),
+        " type=", uint32_t(pImageInfo->type),
+        " tiling=", uint32_t(Tiling),
+        " usage=0x", std::hex, uint32_t(usage),
+        " flags=0x", uint32_t(pImageInfo->flags), std::dec,
+        " status=", int32_t(status),
+        " linear-features=0x", std::hex, uint32_t(features.linearTilingFeatures),
+        " optimal-features=0x", uint32_t(features.optimalTilingFeatures), std::dec,
+        " requested-extent=", pImageInfo->extent.width,
+        "x", pImageInfo->extent.height,
+        "x", pImageInfo->extent.depth,
+        " max-extent=", formatProps.maxExtent.width,
+        "x", formatProps.maxExtent.height,
+        "x", formatProps.maxExtent.depth,
+        " samples=0x", std::hex, uint32_t(formatProps.sampleCounts), std::dec));
+
+      if (pImageInfo->format == VK_FORMAT_R8G8B8A8_SNORM) {
+        struct Candidate {
+          VkFormat format;
+          const char* name;
+        };
+        const Candidate candidates[] = {
+          { VK_FORMAT_R8G8B8A8_SNORM,       "R8G8B8A8_SNORM"       },
+          { VK_FORMAT_R8G8B8A8_UNORM,       "R8G8B8A8_UNORM"       },
+          { VK_FORMAT_R16G16B16A16_SNORM,   "R16G16B16A16_SNORM"   },
+          { VK_FORMAT_R16G16B16A16_SFLOAT,  "R16G16B16A16_SFLOAT"  },
+        };
+
+        for (const auto& candidate : candidates) {
+          VkImageFormatProperties candidateProps = { };
+          const VkResult candidateStatus = adapter->imageFormatProperties(
+            candidate.format, pImageInfo->type, Tiling,
+            usage, pImageInfo->flags, candidateProps);
+          const VkFormatProperties candidateFeatures = adapter->formatProperties(candidate.format);
+          Logger::info(str::format(
+            "WineHuaFormat: snorm-candidate name=", candidate.name,
+            " format=", uint32_t(candidate.format),
+            " status=", int32_t(candidateStatus),
+            " linear-features=0x", std::hex, uint32_t(candidateFeatures.linearTilingFeatures),
+            " optimal-features=0x", uint32_t(candidateFeatures.optimalTilingFeatures), std::dec,
+            " max-extent=", candidateProps.maxExtent.width,
+            "x", candidateProps.maxExtent.height,
+            "x", candidateProps.maxExtent.depth,
+            " samples=0x", std::hex, uint32_t(candidateProps.sampleCounts), std::dec));
+        }
+      }
+    }
     
     if (status != VK_SUCCESS)
       return FALSE;
@@ -1383,6 +1525,9 @@ namespace dxvk {
   
   
   D3D11CommonTexture* GetCommonTexture(ID3D11Resource* pResource) {
+    if (!pResource)
+      return nullptr;
+
     D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
     pResource->GetType(&dimension);
     
