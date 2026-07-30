@@ -40,3 +40,19 @@ The policy is automatic for Maleoon;
 WINEHUA_DXVK_EMULATE_CUBE_ARRAY_DREF=0/1 is the debug override, and
 WINEHUA_DXVK_QUIRKS=maleoon-cube-array-dref can force it for another adapter.
 Native CubeArray sampling remains the default for all other GPUs.
+
+## Future Modern DXVK policy
+
+DXVK 1.10.3 remains the product branch until a separate Modern profile passes
+its capability and regression gates. Do not replace this fork in place with an
+upstream 2.x DLL or rebase this branch to a new upstream major version.
+
+The durable capability evidence, required compatibility forward-port inventory,
+candidate version rationale, and VKD3D boundary are recorded in:
+
+```text
+../../docs/DXVK_MODERN_UPGRADE_READINESS.md
+```
+
+Any future Modern fork must preserve the current Legacy runtime as a separate
+fallback and select it before Wine process startup.
