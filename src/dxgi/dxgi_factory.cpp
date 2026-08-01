@@ -6,6 +6,7 @@
 #include "dxgi_swapchain_dispatcher.h"
 
 #include "../util/util_singleton.h"
+#include "../util/util_winehua_api_trace.h"
 
 namespace dxvk {
 
@@ -137,6 +138,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiFactory::QueryInterface(REFIID riid, void** ppvObject) {
+    WINEHUA_API_TRACE();
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -207,6 +209,7 @@ namespace dxvk {
           IUnknown*             pDevice,
           DXGI_SWAP_CHAIN_DESC* pDesc,
           IDXGISwapChain**      ppSwapChain) {
+    WINEHUA_API_TRACE();
     if (!ppSwapChain || !pDesc || !pDesc->OutputWindow || !pDevice)
       return DXGI_ERROR_INVALID_CALL;
 
@@ -246,6 +249,7 @@ namespace dxvk {
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
           IDXGIOutput*          pRestrictToOutput,
           IDXGISwapChain1**     ppSwapChain) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppSwapChain);
 
     if (!ppSwapChain || !pDesc || !hWnd || !pDevice)
@@ -292,6 +296,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE DxgiFactory::EnumAdapters(
           UINT            Adapter,
           IDXGIAdapter**  ppAdapter) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppAdapter);
     
     if (ppAdapter == nullptr)
@@ -307,6 +312,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE DxgiFactory::EnumAdapters1(
           UINT            Adapter,
           IDXGIAdapter1** ppAdapter) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppAdapter);
     
     if (ppAdapter == nullptr)
@@ -415,6 +421,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiFactory::MakeWindowAssociation(HWND WindowHandle, UINT Flags) {
+    WINEHUA_API_TRACE();
     Logger::warn("DXGI: MakeWindowAssociation: Ignoring flags");
     return S_OK;
   }
@@ -519,6 +526,7 @@ namespace dxvk {
     const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
           IDXGIOutput*          pRestrictToOutput,
           IDXGISwapChain1**     ppSwapChain) {
+    WINEHUA_API_TRACE();
     // Make sure the back buffer size is not zero
     DXGI_SWAP_CHAIN_DESC1 desc = *pDesc;
 

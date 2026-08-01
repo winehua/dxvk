@@ -2,6 +2,7 @@
 
 #include "../dxvk/dxvk_gpu_event.h"
 #include "../dxvk/dxvk_gpu_query.h"
+#include "../util/sync/sync_signal.h"
 
 #include "../d3d10/d3d10_query.h"
 
@@ -51,6 +52,7 @@ namespace dxvk {
     void DoDeferredEnd() {
       m_state = D3D11_VK_QUERY_ENDED;
       m_resetCtr.fetch_add(1, std::memory_order_acquire);
+      m_completionValue.fetch_add(1, std::memory_order_release);
     }
 
     bool IsScoped() const {
@@ -105,6 +107,8 @@ namespace dxvk {
     
     std::array<Rc<DxvkQuery>, MaxGpuQueries> m_query;
     std::array<Rc<DxvkEvent>, MaxGpuEvents>  m_event;
+    Rc<sync::Fence> m_completionSignal;
+    std::atomic<uint64_t> m_completionValue = { 0ull };
 
     D3D10Query m_d3d10;
 

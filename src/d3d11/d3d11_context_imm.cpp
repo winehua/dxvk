@@ -5,6 +5,7 @@
 #include "d3d11_texture.h"
 
 #include "../util/util_win32_compat.h"
+#include "../util/util_winehua_api_trace.h"
 
 constexpr static uint32_t MinFlushIntervalUs = 750;
 constexpr static uint32_t IncFlushIntervalUs = 250;
@@ -22,6 +23,12 @@ namespace dxvk {
     m_stagingBufferFence(new sync::Fence(0)),
     m_multithread(this, false, pParent->GetOptions()->enableContextLock),
     m_videoContext(this, Device) {
+    m_winehuaReadbackDeviceIdle = Device->adapter()->isWineHuaVenus()
+      && env::getEnvVar("DXVK_WINEHUA_READBACK_DEVICE_IDLE") == "1";
+
+    if (m_winehuaReadbackDeviceIdle)
+      Logger::info("WineHua diagnostic: forcing device idle before D3D11 readback invalidate");
+
     EmitCs([
       cDevice                 = m_device,
       cBarrierControlFlags    = pParent->GetOptionsBarrierControlFlags()
@@ -33,7 +40,11 @@ namespace dxvk {
 
     // Stall here so that external submissions to the
     // CS thread can actually access the command list
+    if (env::getEnvVar("DXVK_WINEHUA_TRACE_DEVICE_RESTART") == "1")
+      Logger::info("WineHua device-restart: immediate context initial CS sync begin");
     SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+    if (env::getEnvVar("DXVK_WINEHUA_TRACE_DEVICE_RESTART") == "1")
+      Logger::info("WineHua device-restart: immediate context initial CS sync end");
     
     ClearState();
   }
@@ -45,9 +56,18 @@ namespace dxvk {
     if (this_thread::isInModuleDetachment())
       return;
 
+    const bool traceRestart = env::getEnvVar("DXVK_WINEHUA_TRACE_DEVICE_RESTART") == "1";
+    if (traceRestart)
+      Logger::info("WineHua device-restart: immediate context destroy flush begin");
     ExecuteFlush(GpuFlushType::ExplicitFlush, nullptr, true);
+    if (traceRestart)
+      Logger::info("WineHua device-restart: immediate context destroy CS sync begin");
     SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+    if (traceRestart)
+      Logger::info("WineHua device-restart: immediate context destroy device sync begin");
     SynchronizeDevice();
+    if (traceRestart)
+      Logger::info("WineHua device-restart: immediate context destroy end");
   }
   
   
@@ -71,6 +91,7 @@ namespace dxvk {
           void*                             pData,
           UINT                              DataSize,
           UINT                              GetDataFlags) {
+    WINEHUA_API_TRACE();
     if (!pAsync || (DataSize && !pData))
       return E_INVALIDARG;
     
@@ -109,6 +130,7 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11ImmediateContext::Begin(ID3D11Asynchronous* pAsync) {
+    WINEHUA_API_TRACE();
     D3D10DeviceLock lock = LockContext();
 
     if (unlikely(!pAsync))
@@ -127,6 +149,7 @@ namespace dxvk {
 
 
   void STDMETHODCALLTYPE D3D11ImmediateContext::End(ID3D11Asynchronous* pAsync) {
+    WINEHUA_API_TRACE();
     D3D10DeviceLock lock = LockContext();
 
     if (unlikely(!pAsync))
@@ -158,6 +181,7 @@ namespace dxvk {
 
 
   void STDMETHODCALLTYPE D3D11ImmediateContext::Flush() {
+    WINEHUA_API_TRACE();
     D3D10DeviceLock lock = LockContext();
 
     if (unlikely(m_device->debugFlags().test(DxvkDebugFlag::Capture)))
@@ -292,6 +316,7 @@ namespace dxvk {
           D3D11_MAP                   MapType,
           UINT                        MapFlags,
           D3D11_MAPPED_SUBRESOURCE*   pMappedResource) {
+    WINEHUA_API_TRACE();
     D3D10DeviceLock lock = LockContext();
 
     if (unlikely(!pResource))
@@ -301,9 +326,48 @@ namespace dxvk {
     pResource->GetType(&resourceDim);
 
     if (likely(resourceDim == D3D11_RESOURCE_DIMENSION_BUFFER)) {
-      return MapBuffer(
-        static_cast<D3D11Buffer*>(pResource),
+      auto buffer = static_cast<D3D11Buffer*>(pResource);
+      HRESULT hr = MapBuffer(
+        buffer,
         MapType, MapFlags, pMappedResource);
+      if (SUCCEEDED(hr)) {
+        buffer->SetMapType(MapType);
+
+        static std::atomic<uint64_t> mappedTraceCounter { 0 };
+        uint64_t traceSequence = 0;
+        const auto desc = buffer->Desc();
+        const bool traceMapped = winehuaMappedTraceEnabled()
+                              && desc->ByteWidth <= 64
+          ? (traceSequence = mappedTraceCounter.fetch_add(
+               1, std::memory_order_relaxed) + 1, true)
+          : winehuaMappedTraceSample(mappedTraceCounter, traceSequence);
+        if (traceMapped) {
+          const auto storage = buffer->GetMapStorage();
+          const auto bufferInfo = storage->getBufferInfo();
+          const auto memoryInfo = storage->getMemoryInfo();
+          const auto slice = buffer->GetBuffer()->getSliceHandle(storage);
+
+          Logger::info(str::format(
+            "WineHua mapped-trace: map#", traceSequence,
+            " resource=0x", std::hex, reinterpret_cast<uintptr_t>(buffer),
+            " mapType=", std::dec, uint32_t(MapType),
+            " mapFlags=0x", std::hex, MapFlags,
+            " usage=", std::dec, uint32_t(desc->Usage),
+            " byteWidth=", desc->ByteWidth,
+            " bindFlags=0x", std::hex, desc->BindFlags,
+            " cpuFlags=0x", desc->CPUAccessFlags,
+            " returnedPtr=0x", reinterpret_cast<uintptr_t>(pMappedResource->pData),
+            " storage=0x", reinterpret_cast<uintptr_t>(storage.ptr()),
+            " buffer=0x", slice.handle,
+            " bufferInfoOffset=", std::dec, bufferInfo.offset,
+            " sliceOffset=", slice.offset,
+            " sliceLength=", slice.length,
+            " memory=0x", std::hex, memoryInfo.memory,
+            " memoryOffset=", std::dec, memoryInfo.offset,
+            " memorySize=", memoryInfo.size));
+        }
+      }
+      return hr;
     } else {
       return MapImage(GetCommonTexture(pResource),
         Subresource, MapType, MapFlags, pMappedResource);
@@ -314,17 +378,72 @@ namespace dxvk {
   void STDMETHODCALLTYPE D3D11ImmediateContext::Unmap(
           ID3D11Resource*             pResource,
           UINT                        Subresource) {
+    WINEHUA_API_TRACE();
+    if (unlikely(!pResource))
+      return;
+
+    D3D11_RESOURCE_DIMENSION resourceDim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+    pResource->GetType(&resourceDim);
+
+    if (likely(resourceDim == D3D11_RESOURCE_DIMENSION_BUFFER)) {
+      auto buffer = static_cast<D3D11Buffer*>(pResource);
+      const D3D11_MAP mapType = buffer->GetMapType();
+      buffer->SetMapType(D3D11_MAP(~0u));
+
+      if (mapType != D3D11_MAP(~0u) && mapType != D3D11_MAP_READ) {
+        auto cBuffer = buffer->GetBuffer();
+        auto cStorage = buffer->GetMapStorage();
+        auto cSlice = cBuffer->getSliceHandle(cStorage);
+
+        static std::atomic<uint64_t> mappedTraceCounter { 0 };
+        uint64_t traceSequence = 0;
+        const bool traceMapped = winehuaMappedTraceEnabled()
+                              && cSlice.length <= 64
+          ? (traceSequence = mappedTraceCounter.fetch_add(
+               1, std::memory_order_relaxed) + 1, true)
+          : winehuaMappedTraceSample(mappedTraceCounter, traceSequence);
+        if (traceMapped) {
+          const auto bufferInfo = cStorage->getBufferInfo();
+          const auto memoryInfo = cStorage->getMemoryInfo();
+          Logger::info(str::format(
+            "WineHua mapped-trace: unmap#", traceSequence,
+            " resource=0x", std::hex, reinterpret_cast<uintptr_t>(buffer),
+            " mapType=", std::dec, uint32_t(mapType),
+            " storage=0x", std::hex, reinterpret_cast<uintptr_t>(cStorage.ptr()),
+            " buffer=0x", cSlice.handle,
+            " bufferInfoOffset=", std::dec, bufferInfo.offset,
+            " sliceOffset=", cSlice.offset,
+            " sliceLength=", cSlice.length,
+            " memory=0x", std::hex, memoryInfo.memory,
+            " memoryOffset=", std::dec, memoryInfo.offset,
+            " memorySize=", memoryInfo.size));
+        }
+
+        EmitCs([
+          cBuffer = std::move(cBuffer),
+          cStorage = std::move(cStorage),
+          cSlice,
+          traceMapped,
+          traceSequence
+        ] (DxvkContext* ctx) {
+          const VkResult result = ctx->flushMappedBuffer(cBuffer, cStorage, cSlice);
+          if (traceMapped)
+            Logger::info(str::format(
+              "WineHua mapped-trace: flush#", traceSequence,
+              " result=", int32_t(result)));
+          if (result != VK_SUCCESS)
+            Logger::err("WineHua: Failed to flush mapped D3D11 buffer");
+        });
+      }
+      return;
+    }
+
     // Since it is very uncommon for images to be mapped compared
     // to buffers, we count the currently mapped images in order
     // to avoid a virtual method call in the common case.
     if (unlikely(m_mappedImageCount > 0)) {
-      D3D11_RESOURCE_DIMENSION resourceDim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
-      pResource->GetType(&resourceDim);
-
-      if (resourceDim != D3D11_RESOURCE_DIMENSION_BUFFER) {
-        D3D10DeviceLock lock = LockContext();
-        UnmapImage(GetCommonTexture(pResource), Subresource);
-      }
+      D3D10DeviceLock lock = LockContext();
+      UnmapImage(GetCommonTexture(pResource), Subresource);
     }
   }
 
@@ -423,6 +542,12 @@ namespace dxvk {
           return DXGI_ERROR_WAS_STILL_DRAWING;
         }
 
+        if ((MapType == D3D11_MAP_READ || MapType == D3D11_MAP_READ_WRITE)
+         && buffer->invalidateMappedSlice(buffer->getSliceHandle()) != VK_SUCCESS) {
+          pMappedResource->pData = nullptr;
+          return E_FAIL;
+        }
+
         pMappedResource->pData      = pResource->GetMapPtr();
         pMappedResource->RowPitch   = bufferSize;
         pMappedResource->DepthPitch = bufferSize;
@@ -512,6 +637,10 @@ namespace dxvk {
       } else if (MapType != D3D11_MAP_WRITE_NO_OVERWRITE) {
         if (!WaitForResource(*mappedImage, sequenceNumber, MapType, MapFlags))
           return DXGI_ERROR_WAS_STILL_DRAWING;
+
+        if ((MapType == D3D11_MAP_READ || MapType == D3D11_MAP_READ_WRITE)
+         && mappedImage->invalidateMappedRange(layout.Offset, layout.Size) != VK_SUCCESS)
+          return E_FAIL;
       }
     } else if (mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_DYNAMIC) {
       // Nothing else to really do here, NotifyMap will ensure that we
@@ -615,6 +744,10 @@ namespace dxvk {
             return DXGI_ERROR_WAS_STILL_DRAWING;
         }
       }
+
+      if ((MapType == D3D11_MAP_READ || MapType == D3D11_MAP_READ_WRITE)
+       && mappedBuffer->invalidateMappedSlice(mappedBuffer->getSliceHandle()) != VK_SUCCESS)
+        return E_FAIL;
     }
 
     // Mark the subresource as successfully mapped
@@ -748,22 +881,69 @@ namespace dxvk {
     const void*                         pSrcData,
           UINT                          CopyFlags) {
     void* mapPtr = nullptr;
+    auto buffer = pDstBuffer->GetBuffer();
+    Rc<DxvkResourceAllocation> storage;
 
     if (likely(CopyFlags != D3D11_COPY_NO_OVERWRITE)) {
       auto bufferSlice = pDstBuffer->DiscardSlice(&m_allocationCache);
       mapPtr = bufferSlice->mapPtr();
+      storage = bufferSlice;
 
       EmitCs([
-        cBuffer      = pDstBuffer->GetBuffer(),
+        cBuffer      = buffer,
         cBufferSlice = std::move(bufferSlice)
       ] (DxvkContext* ctx) mutable {
         ctx->invalidateBuffer(cBuffer, std::move(cBufferSlice));
       });
     } else {
       mapPtr = pDstBuffer->GetMapPtr();
+      storage = pDstBuffer->GetMapStorage();
     }
 
     std::memcpy(reinterpret_cast<char*>(mapPtr) + Offset, pSrcData, Length);
+
+    const auto slice = buffer->getSliceHandle(storage);
+    const bool traceMapped = winehuaMappedTraceEnabled()
+                          && pDstBuffer->Desc()->ByteWidth <= 64;
+
+    if (traceMapped) {
+      uint64_t firstWord = 0;
+      std::memcpy(&firstWord, reinterpret_cast<char*>(mapPtr) + Offset,
+        std::min<size_t>(sizeof(firstWord), Length));
+      Logger::info(str::format(
+        "WineHua mapped-trace: update resource=0x", std::hex,
+          reinterpret_cast<uintptr_t>(pDstBuffer),
+        " storage=0x", reinterpret_cast<uintptr_t>(storage.ptr()),
+        " buffer=0x", slice.handle,
+        " sliceOffset=", std::dec, slice.offset,
+        " sliceLength=", slice.length,
+        " updateOffset=", Offset,
+        " updateLength=", Length,
+        " firstWord=0x", std::hex, firstWord));
+    }
+
+    if (!winehuaBatchMappedFlushEnabled()) {
+      const VkResult result = buffer->flushMappedSlice(storage, slice);
+      if (traceMapped)
+        Logger::info(str::format(
+          "WineHua mapped-trace: update-flush result=", int32_t(result)));
+      if (result != VK_SUCCESS)
+        Logger::err("WineHua: Failed to flush updated mapped D3D11 buffer");
+    } else {
+      EmitCs([
+        cBuffer = std::move(buffer),
+        cStorage = std::move(storage),
+        cSlice = slice,
+        traceMapped
+      ] (DxvkContext* ctx) {
+        const VkResult result = ctx->flushMappedBuffer(cBuffer, cStorage, cSlice);
+        if (traceMapped)
+          Logger::info(str::format(
+            "WineHua mapped-trace: update-batch-flush result=", int32_t(result)));
+        if (result != VK_SUCCESS)
+          Logger::err("WineHua: Failed to queue updated mapped D3D11 buffer flush");
+      });
+    }
   }
 
 
@@ -922,8 +1102,11 @@ namespace dxvk {
     if (!Resource.isInUse(access)) {
       SynchronizeCsThread(SequenceNumber);
 
-      if (!Resource.isInUse(access))
+      if (!Resource.isInUse(access)) {
+        if (m_winehuaReadbackDeviceIdle && MapType == D3D11_MAP_READ)
+          m_device->waitForIdle();
         return true;
+      }
     }
 
     if (unlikely(m_device->debugFlags().test(DxvkDebugFlag::Capture))) {
@@ -945,6 +1128,8 @@ namespace dxvk {
       SynchronizeCsThread(SequenceNumber);
 
       m_device->waitForResource(Resource, access);
+      if (m_winehuaReadbackDeviceIdle && MapType == D3D11_MAP_READ)
+        m_device->waitForIdle();
       return true;
     }
   }

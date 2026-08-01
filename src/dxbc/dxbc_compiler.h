@@ -953,6 +953,18 @@ namespace dxvk {
       const DxbcShaderResource&     textureResource,
       const DxbcSampler&            samplerResource,
             bool                    isDepthCompare);
+
+    DxbcRegisterValue emitLoadSamplerEmulationData(
+            uint32_t                samplerId,
+            uint32_t                vectorId);
+
+    DxbcRegisterValue emitCustomBorderColorCorrection(
+            DxbcRegisterValue       value,
+            DxbcRegisterValue       coord,
+      const DxbcRegister&           textureReg,
+      const DxbcShaderResource&     texture,
+            uint32_t                samplerId,
+            DxbcRegisterValue       lod);
     
     ////////////////////////
     // Address load methods

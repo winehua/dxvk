@@ -817,12 +817,13 @@ namespace dxvk {
 
   DxvkGraphicsPipelineShaderState::DxvkGraphicsPipelineShaderState(
     const DxvkGraphicsPipelineShaders&    shaders,
-    const DxvkGraphicsPipelineStateInfo&  state)
-  : vsInfo  (getCreateInfo(shaders, shaders.vs, state)),
-    tcsInfo (getCreateInfo(shaders, shaders.tcs, state)),
-    tesInfo (getCreateInfo(shaders, shaders.tes, state)),
-    gsInfo  (getCreateInfo(shaders, shaders.gs, state)),
-    fsInfo  (getCreateInfo(shaders, shaders.fs, state)) {
+    const DxvkGraphicsPipelineStateInfo&  state,
+          bool                           secondaryOutput)
+  : vsInfo  (getCreateInfo(shaders, shaders.vs, state, false)),
+    tcsInfo (getCreateInfo(shaders, shaders.tcs, state, false)),
+    tesInfo (getCreateInfo(shaders, shaders.tes, state, false)),
+    gsInfo  (getCreateInfo(shaders, shaders.gs, state, false)),
+    fsInfo  (getCreateInfo(shaders, shaders.fs, state, secondaryOutput)) {
 
   }
 
@@ -850,7 +851,8 @@ namespace dxvk {
   DxvkShaderModuleCreateInfo DxvkGraphicsPipelineShaderState::getCreateInfo(
     const DxvkGraphicsPipelineShaders&    shaders,
     const Rc<DxvkShader>&                 shader,
-    const DxvkGraphicsPipelineStateInfo&  state) {
+    const DxvkGraphicsPipelineStateInfo&  state,
+          bool                           secondaryOutput) {
     DxvkShaderModuleCreateInfo info;
 
     if (shader == nullptr)
@@ -860,7 +862,8 @@ namespace dxvk {
     const DxvkShaderCreateInfo& shaderInfo = shader->info();
 
     if (shaderInfo.stage == VK_SHADER_STAGE_FRAGMENT_BIT) {
-      info.fsDualSrcBlend = state.useDualSourceBlending();
+      info.fsSecondaryOutput = secondaryOutput;
+      info.fsDualSrcBlend = !secondaryOutput && state.useDualSourceBlending();
       info.fsFlatShading = state.rs.flatShading() && shader->info().flatShadingInputs;
 
       for (uint32_t i = 0; i < MaxNumRenderTargets; i++) {
@@ -1058,8 +1061,9 @@ namespace dxvk {
 
 
   DxvkGraphicsPipelineHandle DxvkGraphicsPipeline::getPipelineHandle(
-    const DxvkGraphicsPipelineStateInfo& state) {
-    DxvkGraphicsPipelineInstance* instance = this->findInstance(state);
+    const DxvkGraphicsPipelineStateInfo& state,
+          WineHuaDualSrcVariant          dualSrcVariant) {
+    DxvkGraphicsPipelineInstance* instance = this->findInstance(state, dualSrcVariant);
 
     if (unlikely(!instance)) {
       // Exit early if the state vector is invalid
@@ -1068,25 +1072,28 @@ namespace dxvk {
 
       // Prevent other threads from adding new instances and check again
       std::unique_lock<dxvk::mutex> lock(m_mutex);
-      instance = this->findInstance(state);
+      instance = this->findInstance(state, dualSrcVariant);
 
       if (!instance) {
         // Keep pipeline object locked, at worst we're going to stall
         // a state cache worker and the current thread needs priority.
-        bool canCreateBasePipeline = this->canCreateBasePipeline(state);
-        instance = this->createInstance(state, canCreateBasePipeline);
+        bool canCreateBasePipeline = dualSrcVariant == WineHuaDualSrcVariant::None
+          && this->canCreateBasePipeline(state);
+        instance = this->createInstance(state, canCreateBasePipeline, dualSrcVariant);
 
         // Unlock here since we may dispatch the pipeline to a worker,
         // which will then acquire it to increment the use counter.
         lock.unlock();
 
         // If necessary, compile an optimized pipeline variant
-        if (!instance->fastHandle.load())
+        if (dualSrcVariant == WineHuaDualSrcVariant::None
+         && !instance->fastHandle.load())
           m_workers->compileGraphicsPipeline(this, state, DxvkPipelinePriority::Low);
 
         // Only store pipelines in the state cache that cannot benefit
         // from pipeline libraries, or if that feature is disabled.
-        if (!canCreateBasePipeline)
+        if (dualSrcVariant == WineHuaDualSrcVariant::None
+         && !canCreateBasePipeline)
           this->writePipelineStateToCache(state);
       }
     }
@@ -1177,7 +1184,8 @@ namespace dxvk {
 
   DxvkGraphicsPipelineInstance* DxvkGraphicsPipeline::createInstance(
     const DxvkGraphicsPipelineStateInfo& state,
-          bool                           doCreateBasePipeline) {
+          bool                           doCreateBasePipeline,
+          WineHuaDualSrcVariant          dualSrcVariant) {
     VkPipeline baseHandle = VK_NULL_HANDLE;
     VkPipeline fastHandle = VK_NULL_HANDLE;
 
@@ -1186,21 +1194,23 @@ namespace dxvk {
 
     // Fast-linking may fail in some situations
     if (!baseHandle)
-      fastHandle = this->getOptimizedPipeline(state);
+      fastHandle = this->getOptimizedPipeline(state, dualSrcVariant);
 
     // Log pipeline state if requested, or on failure
     if (!fastHandle && !baseHandle)
       this->logPipelineState(LogLevel::Error, state);
 
     m_stats->numGraphicsPipelines += 1;
-    return &(*m_pipelines.emplace(state, baseHandle, fastHandle, computeAttachmentMask(state)));
+    return &(*m_pipelines.emplace(state, baseHandle, fastHandle,
+      computeAttachmentMask(state), dualSrcVariant));
   }
   
   
   DxvkGraphicsPipelineInstance* DxvkGraphicsPipeline::findInstance(
-    const DxvkGraphicsPipelineStateInfo& state) {
+    const DxvkGraphicsPipelineStateInfo& state,
+          WineHuaDualSrcVariant          dualSrcVariant) {
     for (auto& instance : m_pipelines) {
-      if (instance.state == state)
+      if (instance.state == state && instance.dualSrcVariant == dualSrcVariant)
         return &instance;
     }
     
@@ -1363,9 +1373,10 @@ namespace dxvk {
 
 
   VkPipeline DxvkGraphicsPipeline::getOptimizedPipeline(
-    const DxvkGraphicsPipelineStateInfo& state) {
+    const DxvkGraphicsPipelineStateInfo& state,
+          WineHuaDualSrcVariant          dualSrcVariant) {
     DxvkGraphicsPipelineFastInstanceKey key(m_device,
-      m_shaders, state, m_flags, m_specConstantMask);
+      m_shaders, state, m_flags, m_specConstantMask, dualSrcVariant);
 
     std::lock_guard lock(m_fastMutex);
 

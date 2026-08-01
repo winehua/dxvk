@@ -28,6 +28,7 @@
 #include "../wsi/wsi_window.h"
 
 #include "../util/util_shared_res.h"
+#include "../util/util_winehua_api_trace.h"
 
 namespace dxvk {
   
@@ -52,13 +53,25 @@ namespace dxvk {
     m_initializer = new D3D11Initializer(this);
     m_context     = new D3D11ImmediateContext(this, m_dxvkDevice);
     m_d3d10Device = new D3D10Device(this, m_context.ptr());
+
+    if (env::getEnvVar("DXVK_WINEHUA_TRACE_DEVICE_RESTART") == "1")
+      Logger::info("WineHua device-restart: D3D11Device constructed");
   }
   
   
   D3D11Device::~D3D11Device() {
+    const bool traceRestart = env::getEnvVar("DXVK_WINEHUA_TRACE_DEVICE_RESTART") == "1";
+    if (traceRestart)
+      Logger::info("WineHua device-restart: D3D11Device destroy begin");
     delete m_d3d10Device;
+    if (traceRestart)
+      Logger::info("WineHua device-restart: releasing immediate context");
     m_context = nullptr;
+    if (traceRestart)
+      Logger::info("WineHua device-restart: immediate context released");
     delete m_initializer;
+    if (traceRestart)
+      Logger::info("WineHua device-restart: D3D11Device destroy end");
   }
   
   
@@ -73,6 +86,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE D3D11Device::QueryInterface(REFIID riid, void** ppvObject) {
+    WINEHUA_API_TRACE();
     return m_container->QueryInterface(riid, ppvObject);
   }
     
@@ -81,6 +95,7 @@ namespace dxvk {
     const D3D11_BUFFER_DESC*      pDesc,
     const D3D11_SUBRESOURCE_DATA* pInitialData,
           ID3D11Buffer**          ppBuffer) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppBuffer);
     
     if (!pDesc)
@@ -118,6 +133,7 @@ namespace dxvk {
     const D3D11_TEXTURE1D_DESC*   pDesc,
     const D3D11_SUBRESOURCE_DATA* pInitialData,
           ID3D11Texture1D**       ppTexture1D) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppTexture1D);
 
     if (!pDesc)
@@ -164,6 +180,7 @@ namespace dxvk {
     const D3D11_TEXTURE2D_DESC*   pDesc,
     const D3D11_SUBRESOURCE_DATA* pInitialData,
           ID3D11Texture2D**       ppTexture2D) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppTexture2D);
 
     if (!pDesc)
@@ -210,6 +227,7 @@ namespace dxvk {
     const D3D11_TEXTURE2D_DESC1*  pDesc,
     const D3D11_SUBRESOURCE_DATA* pInitialData,
           ID3D11Texture2D1**      ppTexture2D) {
+    WINEHUA_API_TRACE();
     D3D11_COMMON_TEXTURE_DESC desc;
     desc.Width          = pDesc->Width;
     desc.Height         = pDesc->Height;
@@ -252,6 +270,7 @@ namespace dxvk {
     const D3D11_TEXTURE3D_DESC*   pDesc,
     const D3D11_SUBRESOURCE_DATA* pInitialData,
           ID3D11Texture3D**       ppTexture3D) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppTexture3D);
 
     if (!pDesc)
@@ -339,6 +358,7 @@ namespace dxvk {
           ID3D11Resource*                   pResource,
     const D3D11_SHADER_RESOURCE_VIEW_DESC*  pDesc,
           ID3D11ShaderResourceView**        ppSRView) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppSRView);
 
     if (!pResource)
@@ -427,6 +447,7 @@ namespace dxvk {
           ID3D11Resource*                   pResource,
     const D3D11_UNORDERED_ACCESS_VIEW_DESC* pDesc,
           ID3D11UnorderedAccessView**       ppUAView) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppUAView);
 
     if (!pResource)
@@ -517,6 +538,7 @@ namespace dxvk {
           ID3D11Resource*                   pResource,
     const D3D11_RENDER_TARGET_VIEW_DESC*    pDesc,
           ID3D11RenderTargetView**          ppRTView) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppRTView);
 
     if (!pResource)
@@ -611,6 +633,7 @@ namespace dxvk {
           ID3D11Resource*                   pResource,
     const D3D11_DEPTH_STENCIL_VIEW_DESC*    pDesc,
           ID3D11DepthStencilView**          ppDepthStencilView) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppDepthStencilView);
     
     if (pResource == nullptr)
@@ -661,6 +684,7 @@ namespace dxvk {
     const void*                       pShaderBytecodeWithInputSignature,
           SIZE_T                      BytecodeLength,
           ID3D11InputLayout**         ppInputLayout) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppInputLayout);
 
     // This check is somehow even correct, passing null with zero
@@ -784,6 +808,7 @@ namespace dxvk {
           SIZE_T                      BytecodeLength,
           ID3D11ClassLinkage*         pClassLinkage,
           ID3D11VertexShader**        ppVertexShader) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppVertexShader);
     D3D11CommonShader module;
 
@@ -816,6 +841,7 @@ namespace dxvk {
           SIZE_T                      BytecodeLength,
           ID3D11ClassLinkage*         pClassLinkage,
           ID3D11GeometryShader**      ppGeometryShader) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppGeometryShader);
     D3D11CommonShader module;
     
@@ -853,6 +879,7 @@ namespace dxvk {
           UINT                        RasterizedStream,
           ID3D11ClassLinkage*         pClassLinkage,
           ID3D11GeometryShader**      ppGeometryShader) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppGeometryShader);
     D3D11CommonShader module;
 
@@ -946,6 +973,7 @@ namespace dxvk {
           SIZE_T                      BytecodeLength,
           ID3D11ClassLinkage*         pClassLinkage,
           ID3D11PixelShader**         ppPixelShader) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppPixelShader);
     D3D11CommonShader module;
     
@@ -979,6 +1007,7 @@ namespace dxvk {
           SIZE_T                      BytecodeLength,
           ID3D11ClassLinkage*         pClassLinkage,
           ID3D11HullShader**          ppHullShader) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppHullShader);
     D3D11CommonShader module;
     
@@ -1016,6 +1045,7 @@ namespace dxvk {
           SIZE_T                      BytecodeLength,
           ID3D11ClassLinkage*         pClassLinkage,
           ID3D11DomainShader**        ppDomainShader) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppDomainShader);
     D3D11CommonShader module;
     
@@ -1047,6 +1077,7 @@ namespace dxvk {
           SIZE_T                      BytecodeLength,
           ID3D11ClassLinkage*         pClassLinkage,
           ID3D11ComputeShader**       ppComputeShader) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppComputeShader);
     D3D11CommonShader module;
     
@@ -1083,6 +1114,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Device::CreateBlendState(
     const D3D11_BLEND_DESC*           pBlendStateDesc,
           ID3D11BlendState**          ppBlendState) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppBlendState);
 
     if (!pBlendStateDesc)
@@ -1123,6 +1155,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Device::CreateDepthStencilState(
     const D3D11_DEPTH_STENCIL_DESC*   pDepthStencilDesc,
           ID3D11DepthStencilState**   ppDepthStencilState) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppDepthStencilState);
     
     if (!pDepthStencilDesc)
@@ -1143,6 +1176,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Device::CreateRasterizerState(
     const D3D11_RASTERIZER_DESC*      pRasterizerDesc,
           ID3D11RasterizerState**     ppRasterizerState) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppRasterizerState);
 
     if (!pRasterizerDesc)
@@ -1210,6 +1244,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Device::CreateSamplerState(
     const D3D11_SAMPLER_DESC*         pSamplerDesc,
           ID3D11SamplerState**        ppSamplerState) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppSamplerState);
 
     if (pSamplerDesc == nullptr)
@@ -1241,6 +1276,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Device::CreateQuery(
     const D3D11_QUERY_DESC*           pQueryDesc,
           ID3D11Query**               ppQuery) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppQuery);
 
     if (!pQueryDesc)
@@ -1298,6 +1334,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Device::CreatePredicate(
     const D3D11_QUERY_DESC*           pPredicateDesc,
           ID3D11Predicate**           ppPredicate) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppPredicate);
     
     if (!pPredicateDesc)
@@ -1340,6 +1377,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Device::CreateDeferredContext(
           UINT                        ContextFlags,
           ID3D11DeviceContext**       ppDeferredContext) {
+    WINEHUA_API_TRACE();
     *ppDeferredContext = ref(new D3D11DeferredContext(this, m_dxvkDevice, ContextFlags));
     return S_OK;
   }
@@ -1547,6 +1585,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D11Device::CheckFormatSupport(
           DXGI_FORMAT Format,
           UINT*       pFormatSupport) {
+    WINEHUA_API_TRACE();
     return GetFormatSupportFlags(Format, pFormatSupport, nullptr);
   }
   
@@ -1555,6 +1594,7 @@ namespace dxvk {
           DXGI_FORMAT Format,
           UINT        SampleCount,
           UINT*       pNumQualityLevels) {
+    WINEHUA_API_TRACE();
     return CheckMultisampleQualityLevels1(Format, SampleCount, 0, pNumQualityLevels);
   }
   
@@ -1564,6 +1604,7 @@ namespace dxvk {
           UINT        SampleCount,
           UINT        Flags,
           UINT*       pNumQualityLevels) {
+    WINEHUA_API_TRACE();
     // There are many error conditions, so we'll just assume
     // that we will fail and return a non-zero value in case
     // the device does actually support the format.
@@ -1654,6 +1695,7 @@ namespace dxvk {
           D3D11_FEATURE Feature,
           void*         pFeatureSupportData,
           UINT          FeatureSupportDataSize) {
+    WINEHUA_API_TRACE();
     switch (Feature) {
       // Format support queries are special in that they use in-out
       // structs, and we need the Vulkan device to query them at all
@@ -1712,6 +1754,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE D3D11Device::GetDeviceRemovedReason() {
+    WINEHUA_API_TRACE();
     VkResult status = m_dxvkDevice->getDeviceStatus();
 
     switch (status) {
@@ -1722,6 +1765,7 @@ namespace dxvk {
   
   
   void STDMETHODCALLTYPE D3D11Device::GetImmediateContext(ID3D11DeviceContext** ppImmediateContext) {
+    WINEHUA_API_TRACE();
     *ppImmediateContext = m_context.ref();
   }
 
@@ -1937,17 +1981,29 @@ namespace dxvk {
     const Rc<DxvkAdapter>&  Adapter) {
     DxvkDeviceFeatures supported = Adapter->features();
     DxvkDeviceFeatures enabled   = {};
+    const bool venusCompatibility = Adapter->isWineHuaVenus();
+
+    /* Venus faithfully reports the Host feature set. On Mobile Vulkan that
+     * may omit desktop-only D3D11 conveniences, which must not be requested
+     * during VkDevice creation. Individual use sites retain their normal
+     * fallback or validation paths; this only makes device creation honest. */
+    if (venusCompatibility)
+      Logger::info("WineHua: applying Venus capability policy");
 
     // Required for feature level 10_1
     enabled.core.features.depthBiasClamp                          = VK_TRUE;
     enabled.core.features.depthClamp                              = VK_TRUE;
-    enabled.core.features.dualSrcBlend                            = VK_TRUE;
+    enabled.core.features.dualSrcBlend                            = venusCompatibility
+                                                                  ? supported.core.features.dualSrcBlend
+                                                                  : VK_TRUE;
     enabled.core.features.fillModeNonSolid                        = VK_TRUE;
     enabled.core.features.fullDrawIndexUint32                     = VK_TRUE;
     enabled.core.features.geometryShader                          = VK_TRUE;
     enabled.core.features.imageCubeArray                          = VK_TRUE;
     enabled.core.features.independentBlend                        = VK_TRUE;
-    enabled.core.features.multiViewport                           = VK_TRUE;
+    enabled.core.features.multiViewport                           = venusCompatibility
+                                                                  ? supported.core.features.multiViewport
+                                                                  : VK_TRUE;
     enabled.core.features.occlusionQueryPrecise                   = VK_TRUE;
     enabled.core.features.pipelineStatisticsQuery                 = supported.core.features.pipelineStatisticsQuery;
     enabled.core.features.sampleRateShading                       = VK_TRUE;
@@ -1955,7 +2011,9 @@ namespace dxvk {
     enabled.core.features.shaderClipDistance                      = VK_TRUE;
     enabled.core.features.shaderCullDistance                      = VK_TRUE;
     enabled.core.features.shaderImageGatherExtended               = VK_TRUE;
-    enabled.core.features.textureCompressionBC                    = VK_TRUE;
+    enabled.core.features.textureCompressionBC                    = venusCompatibility
+                                                                  ? supported.core.features.textureCompressionBC
+                                                                  : VK_TRUE;
 
     enabled.vk12.samplerMirrorClampToEdge                         = VK_TRUE;
 
@@ -1964,8 +2022,12 @@ namespace dxvk {
     enabled.extCustomBorderColor.customBorderColors               = supported.extCustomBorderColor.customBorderColorWithoutFormat;
     enabled.extCustomBorderColor.customBorderColorWithoutFormat   = supported.extCustomBorderColor.customBorderColorWithoutFormat;
 
-    enabled.extTransformFeedback.transformFeedback                = VK_TRUE;
-    enabled.extTransformFeedback.geometryStreams                  = VK_TRUE;
+    enabled.extTransformFeedback.transformFeedback                = venusCompatibility
+                                                                  ? supported.extTransformFeedback.transformFeedback
+                                                                  : VK_TRUE;
+    enabled.extTransformFeedback.geometryStreams                  = venusCompatibility
+                                                                  ? supported.extTransformFeedback.geometryStreams
+                                                                  : VK_TRUE;
 
     enabled.extVertexAttributeDivisor.vertexAttributeInstanceRateDivisor      = supported.extVertexAttributeDivisor.vertexAttributeInstanceRateDivisor;
     enabled.extVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor  = supported.extVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor;
@@ -2018,6 +2080,7 @@ namespace dxvk {
           size_t                  BytecodeLength,
           ID3D11ClassLinkage*     pClassLinkage,
     const DxbcModuleInfo*         pModuleInfo) {
+    WINEHUA_API_TRACE();
     if (!BytecodeLength || !pShaderBytecode)
       return E_INVALIDARG;
 
@@ -2058,6 +2121,7 @@ namespace dxvk {
 
 
   HRESULT D3D11Device::GetFormatSupportFlags(DXGI_FORMAT Format, UINT* pFlags1, UINT* pFlags2) const {
+    WINEHUA_API_TRACE();
     const DXGI_VK_FORMAT_INFO fmtMapping = LookupFormat(Format, DXGI_VK_FORMAT_MODE_ANY);
 
     // Reset output flags preemptively

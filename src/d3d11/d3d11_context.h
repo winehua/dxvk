@@ -787,6 +787,13 @@ namespace dxvk {
 
     Rc<DxvkDevice>              m_device;
 
+    using SamplerEmulationStageData =
+      std::array<D3D11SamplerEmulationData, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT>;
+
+    std::array<Rc<DxvkBuffer>, 6>             m_samplerEmulationBuffers;
+    std::array<SamplerEmulationStageData, 6>  m_samplerEmulationData;
+    bool                                      m_samplerEmulationEnabled = false;
+
     D3D11ContextState           m_state;
     UINT                        m_flags;
 
@@ -856,6 +863,9 @@ namespace dxvk {
     template<DxbcProgramType ShaderStage>
     void BindShader(
       const D3D11CommonShader*                pShaderModule);
+
+    template<DxbcProgramType ShaderStage>
+    void UpdateSamplerEmulationBuffer();
 
     void BindFramebuffer();
 

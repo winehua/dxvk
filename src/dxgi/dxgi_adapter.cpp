@@ -12,6 +12,7 @@
 
 #include "../util/util_luid.h"
 #include "../util/util_win32_compat.h"
+#include "../util/util_winehua_api_trace.h"
 
 #include "../wsi/wsi_monitor.h"
 
@@ -82,6 +83,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiAdapter::QueryInterface(REFIID riid, void** ppvObject) {
+    WINEHUA_API_TRACE();
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -121,6 +123,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE DxgiAdapter::CheckInterfaceSupport(
           REFGUID                   InterfaceName,
           LARGE_INTEGER*            pUMDVersion) {
+    WINEHUA_API_TRACE();
     HRESULT hr = DXGI_ERROR_UNSUPPORTED;
 
     if (InterfaceName == __uuidof(IDXGIDevice)
@@ -148,6 +151,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE DxgiAdapter::EnumOutputs(
           UINT                      Output,
           IDXGIOutput**             ppOutput) {
+    WINEHUA_API_TRACE();
     InitReturnPtr(ppOutput);
     
     if (ppOutput == nullptr)
@@ -191,6 +195,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiAdapter::GetDesc(DXGI_ADAPTER_DESC* pDesc) {
+    WINEHUA_API_TRACE();
     if (pDesc == nullptr)
       return E_INVALIDARG;
 
@@ -208,6 +213,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiAdapter::GetDesc1(DXGI_ADAPTER_DESC1* pDesc) {
+    WINEHUA_API_TRACE();
     if (pDesc == nullptr)
       return E_INVALIDARG;
 
@@ -226,6 +232,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiAdapter::GetDesc2(DXGI_ADAPTER_DESC2* pDesc) {
+    WINEHUA_API_TRACE();
     if (pDesc == nullptr)
       return E_INVALIDARG;
 

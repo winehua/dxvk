@@ -237,6 +237,10 @@ namespace dxvk {
       const DxvkTimelineSemaphores&       semaphores,
             DxvkTimelineSemaphoreValues&  timelines,
             uint64_t                      frameId);
+
+    VkResult queueWineHuaMappedFlush(
+      const Rc<DxvkResourceAllocation>&   storage,
+      const VkMappedMemoryRange&          range);
     
     /**
      * \brief Stat counters
@@ -578,6 +582,16 @@ namespace dxvk {
         firstBinding, bindingCount, pBuffers, pOffsets,
         pSizes, pStrides);
     }
+
+
+    void cmdBindVertexBuffersLegacy(
+            uint32_t                firstBinding,
+            uint32_t                bindingCount,
+      const VkBuffer*               pBuffers,
+      const VkDeviceSize*           pOffsets) {
+      m_vkd->vkCmdBindVertexBuffers(getCmdBuffer(),
+        firstBinding, bindingCount, pBuffers, pOffsets);
+    }
     
     void cmdLaunchCuKernel(VkCuLaunchInfoNVX launchInfo) {
       m_cmd.execCommands = true;
@@ -640,6 +654,19 @@ namespace dxvk {
       m_cmd.execCommands |= cmdBuffer == DxvkCmdBuffer::ExecBuffer;
 
       m_vkd->vkCmdCopyBuffer2(getCmdBuffer(cmdBuffer), copyInfo);
+    }
+
+
+    void cmdCopyBufferLegacy(
+            DxvkCmdBuffer           cmdBuffer,
+            VkBuffer                srcBuffer,
+            VkBuffer                dstBuffer,
+            uint32_t                regionCount,
+      const VkBufferCopy*           pRegions) {
+      m_cmd.execCommands |= cmdBuffer == DxvkCmdBuffer::ExecBuffer;
+
+      m_vkd->vkCmdCopyBuffer(getCmdBuffer(cmdBuffer),
+        srcBuffer, dstBuffer, regionCount, pRegions);
     }
     
     
@@ -1165,6 +1192,11 @@ namespace dxvk {
     }
 
   private:
+
+    struct WineHuaMappedFlush {
+      Rc<DxvkResourceAllocation> storage;
+      VkMappedMemoryRange        range;
+    };
     
     DxvkDevice*               m_device;
     Rc<vk::DeviceFn>          m_vkd;
@@ -1197,6 +1229,8 @@ namespace dxvk {
 
     std::vector<DxvkGraphicsPipeline*> m_pipelines;
 
+    std::vector<WineHuaMappedFlush> m_winehuaMappedFlushes;
+
     force_inline VkCommandBuffer getCmdBuffer() const {
       // Allocation logic will always provide an execution buffer
       return m_cmd.cmdBuffers[uint32_t(DxvkCmdBuffer::ExecBuffer)];
@@ -1227,6 +1261,8 @@ namespace dxvk {
     void endCommandBuffer(VkCommandBuffer cmdBuffer);
 
     VkCommandBuffer allocateCommandBuffer(DxvkCmdBuffer type);
+
+    VkResult flushWineHuaMappedFlushes();
 
   };
   

@@ -12,6 +12,8 @@ namespace dxvk {
   : m_vkd           (device->vkd()),
     m_allocator     (&memAlloc),
     m_properties    (memFlags),
+    m_nonCoherentAtomSize(device->properties().core.properties.limits.nonCoherentAtomSize),
+    m_forceMappedInvalidate(device->adapter()->isWineHuaVenus()),
     m_shaderStages  (util::shaderStages(createInfo.stages)),
     m_info          (createInfo) {
     m_allocator->registerResource(this);
@@ -52,6 +54,8 @@ namespace dxvk {
   : m_vkd           (device->vkd()),
     m_allocator     (&memAlloc),
     m_properties    (memFlags),
+    m_nonCoherentAtomSize(device->properties().core.properties.limits.nonCoherentAtomSize),
+    m_forceMappedInvalidate(device->adapter()->isWineHuaVenus()),
     m_shaderStages  (util::shaderStages(createInfo.stages)),
     m_info          (createInfo),
     m_stableAddress (true) {
@@ -76,6 +80,33 @@ namespace dxvk {
   bool DxvkImage::canRelocate() const {
     return !m_imageInfo.mapPtr && !m_shared && !m_stableAddress
         && !(m_info.flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
+  }
+
+
+  VkResult DxvkImage::invalidateMappedRange(
+          VkDeviceSize offset,
+          VkDeviceSize length) const {
+    if (!m_forceMappedInvalidate || !length)
+      return VK_SUCCESS;
+
+    const auto memoryInfo = m_storage->getMemoryInfo();
+    if (!memoryInfo.memory || !m_imageInfo.mapPtr || offset > memoryInfo.size)
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    length = std::min(length, memoryInfo.size - offset);
+    if (!length)
+      return VK_SUCCESS;
+
+    const VkDeviceSize atom = std::max(VkDeviceSize(1u), m_nonCoherentAtomSize);
+    const VkDeviceSize rangeBegin = memoryInfo.offset + offset;
+    const VkDeviceSize rangeEnd = align(rangeBegin + length, atom);
+
+    VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
+    range.memory = memoryInfo.memory;
+    range.offset = (rangeBegin / atom) * atom;
+    range.size = rangeEnd - range.offset;
+
+    return m_vkd->vkInvalidateMappedMemoryRanges(m_vkd->device(), 1, &range);
   }
 
 

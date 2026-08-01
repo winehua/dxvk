@@ -859,6 +859,83 @@ namespace dxvk {
       RemapDepthFormat(DXGI_FORMAT_D24_UNORM_S8_UINT,     VK_FORMAT_D32_SFLOAT_S8_UINT);
     }
 
+    /* Mobile Venus drivers expose the Host format table truthfully. When BC
+     * is absent, WineHua decodes immutable/default sampled resources during
+     * upload and stores the pixels in this uncompressed backing format. */
+    if (device->adapter()->isWineHuaVenus()
+     && !device->features().core.features.textureCompressionBC) {
+      const VkComponentMapping identity = {
+        VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+        VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+
+      auto remap = [this, identity](DXGI_FORMAT format, VkFormat target) {
+        RemapColorFormat(format, target, identity);
+      };
+
+      remap(DXGI_FORMAT_BC1_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC1_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC1_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+      remap(DXGI_FORMAT_BC2_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC2_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC2_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+      remap(DXGI_FORMAT_BC3_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC3_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC3_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+      remap(DXGI_FORMAT_BC4_TYPELESS,   VK_FORMAT_R8_UNORM);
+      remap(DXGI_FORMAT_BC4_UNORM,      VK_FORMAT_R8_UNORM);
+      remap(DXGI_FORMAT_BC4_SNORM,      VK_FORMAT_R8_SNORM);
+      remap(DXGI_FORMAT_BC5_TYPELESS,   VK_FORMAT_R8G8_UNORM);
+      remap(DXGI_FORMAT_BC5_UNORM,      VK_FORMAT_R8G8_UNORM);
+      remap(DXGI_FORMAT_BC5_SNORM,      VK_FORMAT_R8G8_SNORM);
+      remap(DXGI_FORMAT_BC6H_TYPELESS,  VK_FORMAT_R16G16B16A16_SFLOAT);
+      remap(DXGI_FORMAT_BC6H_UF16,      VK_FORMAT_R16G16B16A16_SFLOAT);
+      remap(DXGI_FORMAT_BC6H_SF16,      VK_FORMAT_R16G16B16A16_SFLOAT);
+      remap(DXGI_FORMAT_BC7_TYPELESS,   VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC7_UNORM,      VK_FORMAT_R8G8B8A8_UNORM);
+      remap(DXGI_FORMAT_BC7_UNORM_SRGB, VK_FORMAT_R8G8B8A8_SRGB);
+
+      const DXGI_VK_FORMAT_FAMILY rgba8Family = {
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB };
+      const DXGI_VK_FORMAT_FAMILY rgba8UnormFamily = { VK_FORMAT_R8G8B8A8_UNORM };
+      const DXGI_VK_FORMAT_FAMILY rgba8SrgbFamily = { VK_FORMAT_R8G8B8A8_SRGB };
+      const DXGI_VK_FORMAT_FAMILY r8Family = { VK_FORMAT_R8_UNORM, VK_FORMAT_R8_SNORM };
+      const DXGI_VK_FORMAT_FAMILY rg8Family = { VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8_SNORM };
+      const DXGI_VK_FORMAT_FAMILY r8UnormFamily = { VK_FORMAT_R8_UNORM };
+      const DXGI_VK_FORMAT_FAMILY r8SnormFamily = { VK_FORMAT_R8_SNORM };
+      const DXGI_VK_FORMAT_FAMILY rg8UnormFamily = { VK_FORMAT_R8G8_UNORM };
+      const DXGI_VK_FORMAT_FAMILY rg8SnormFamily = { VK_FORMAT_R8G8_SNORM };
+      const DXGI_VK_FORMAT_FAMILY rgba16fFamily = { VK_FORMAT_R16G16B16A16_SFLOAT };
+
+      for (DXGI_FORMAT format : {
+             DXGI_FORMAT_BC1_TYPELESS, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC1_UNORM_SRGB,
+             DXGI_FORMAT_BC2_TYPELESS, DXGI_FORMAT_BC2_UNORM, DXGI_FORMAT_BC2_UNORM_SRGB,
+             DXGI_FORMAT_BC3_TYPELESS, DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_BC3_UNORM_SRGB,
+             DXGI_FORMAT_BC7_TYPELESS, DXGI_FORMAT_BC7_UNORM, DXGI_FORMAT_BC7_UNORM_SRGB })
+        m_dxgiFamilies[uint32_t(format)] = rgba8Family;
+
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC4_TYPELESS)] = r8Family;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC4_UNORM)] = r8UnormFamily;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC4_SNORM)] = r8SnormFamily;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC5_TYPELESS)] = rg8Family;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC5_UNORM)] = rg8UnormFamily;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC5_SNORM)] = rg8SnormFamily;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC6H_TYPELESS)] = rgba16fFamily;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC6H_UF16)] = rgba16fFamily;
+      m_dxgiFamilies[uint32_t(DXGI_FORMAT_BC6H_SF16)] = rgba16fFamily;
+
+      for (DXGI_FORMAT format : {
+             DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC2_UNORM,
+             DXGI_FORMAT_BC3_UNORM, DXGI_FORMAT_BC7_UNORM })
+        m_dxgiFamilies[uint32_t(format)] = rgba8UnormFamily;
+
+      for (DXGI_FORMAT format : {
+             DXGI_FORMAT_BC1_UNORM_SRGB, DXGI_FORMAT_BC2_UNORM_SRGB,
+             DXGI_FORMAT_BC3_UNORM_SRGB, DXGI_FORMAT_BC7_UNORM_SRGB })
+        m_dxgiFamilies[uint32_t(format)] = rgba8SrgbFamily;
+
+      Logger::info("WineHua: BC1-BC7 upload-time decompression enabled");
+    }
+
     if (!CheckImageFormatSupport(device, VK_FORMAT_A8_UNORM_KHR,
           VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
           VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
@@ -973,6 +1050,7 @@ namespace dxvk {
           VkFormat            Target,
           VkComponentMapping  Swizzle) {
     m_dxgiFormats[uint32_t(Format)].FormatColor = Target;
+    m_dxgiFormats[uint32_t(Format)].AspectColor = VK_IMAGE_ASPECT_COLOR_BIT;
     m_dxgiFormats[uint32_t(Format)].Swizzle = Swizzle;
   }
   

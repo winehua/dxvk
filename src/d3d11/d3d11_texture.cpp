@@ -81,6 +81,9 @@ namespace dxvk {
     // by a view with a different format. Depth-stencil formats cannot
     // be reinterpreted in Vulkan, so we'll ignore those.
     auto formatProperties = lookupFormatInfo(formatInfo.Format);
+    auto packedProperties = lookupFormatInfo(m_packedFormat);
+    const bool isBcEmulated = packedProperties->flags.test(DxvkFormatFlag::BlockCompressed)
+                           && !formatProperties->flags.test(DxvkFormatFlag::BlockCompressed);
     
     bool isMutable = formatFamily.FormatCount > 1;
     bool isMultiPlane = (formatProperties->aspectMask & VK_IMAGE_ASPECT_PLANE_0_BIT) != 0;
@@ -171,6 +174,18 @@ namespace dxvk {
     // Determine map mode based on our findings
     VkMemoryPropertyFlags memoryProperties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     std::tie(m_mapMode, memoryProperties) = DetermineMapMode(pDevice, &imageInfo);
+
+    /* BC backing images contain decoded pixels, not the D3D-visible block
+     * layout. Accept only device-local sampled textures until a bidirectional
+     * codec exists for map, render-target, UAV and shared semantics. */
+    if (isBcEmulated
+     && (m_mapMode != D3D11_COMMON_TEXTURE_MAP_MODE_NONE
+      || (m_desc.BindFlags & (D3D11_BIND_RENDER_TARGET
+                            | D3D11_BIND_DEPTH_STENCIL
+                            | D3D11_BIND_UNORDERED_ACCESS))
+      || imageInfo.shared)) {
+      throw DxvkError("WineHua: BC emulation supports device-local sampled textures only");
+    }
     
     // If the image is mapped directly to host memory, we need
     // to enable linear tiling, and DXVK needs to be aware that

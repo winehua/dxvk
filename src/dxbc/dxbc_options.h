@@ -63,6 +63,10 @@ namespace dxvk {
     /// Whether to enable sincos emulation
     bool sincosEmulation = false;
 
+    /// Correct arbitrary D3D11 border colors in generated shaders when the
+    /// Vulkan device has no format-independent custom border color support.
+    bool emulateCustomBorderColor = false;
+
     /// Float control flags
     DxbcFloatControlFlags floatControl;
 

@@ -12,6 +12,7 @@
 namespace dxvk {
 
   class DxvkBuffer;
+  class DxvkCommandList;
 
   /**
    * \brief Buffer create info
@@ -245,6 +246,18 @@ namespace dxvk {
       return result;
     }
 
+    DxvkBufferSliceHandle getSliceHandle(
+      const Rc<DxvkResourceAllocation>& storage) const {
+      const auto bufferInfo = storage->getBufferInfo();
+
+      DxvkBufferSliceHandle result = { };
+      result.handle = bufferInfo.buffer;
+      result.offset = bufferInfo.offset;
+      result.length = m_info.size;
+      result.mapPtr = bufferInfo.mapPtr;
+      return result;
+    }
+
     /**
      * \brief Retrieves sub slice handle
      * 
@@ -361,6 +374,31 @@ namespace dxvk {
     }
 
     /**
+     * \brief Publishes a mapped buffer range to the Vulkan implementation
+     *
+     * WineHua's Venus transport keeps a Guest shadow mapping for Host-coherent
+     * memory. A normal CPU store therefore still needs an explicit Vulkan
+     * flush to publish the written range to the Host shadow mapping.
+     */
+    VkResult flushMappedSlice(
+      const DxvkBufferSliceHandle& slice,
+            DxvkCommandList*       commandList = nullptr) const;
+
+    VkResult flushMappedSlice(
+      const Rc<DxvkResourceAllocation>& storage,
+      const DxvkBufferSliceHandle&      slice,
+            DxvkCommandList*            commandList = nullptr) const;
+
+    /**
+     * \brief Makes a mapped buffer range visible to the CPU
+     *
+     * WineHua's Venus transport uses separate Host and Guest mappings even
+     * for memory advertised as host-coherent. Readback therefore needs an
+     * explicit invalidate at the API-visible CPU read boundary.
+     */
+    VkResult invalidateMappedSlice(const DxvkBufferSliceHandle& slice) const;
+
+    /**
      * \brief Retrieves resource ID for barrier tracking
      * \returns Unique resource ID
      */
@@ -431,6 +469,7 @@ namespace dxvk {
     Rc<vk::DeviceFn>            m_vkd;
     DxvkMemoryAllocator*        m_allocator     = nullptr;
     VkMemoryPropertyFlags       m_properties    = 0u;
+    VkDeviceSize                m_nonCoherentAtomSize = 1u;
     VkShaderStageFlags          m_shaderStages  = 0u;
     DxvkSharingModeInfo         m_sharingMode   = { };
 
@@ -440,6 +479,7 @@ namespace dxvk {
     uint32_t                    m_version       = 0u;
 
     bool                        m_stableAddress = false;
+    bool                        m_forceMappedFlush = false;
 
     DxvkResourceBufferInfo      m_bufferInfo    = { };
 

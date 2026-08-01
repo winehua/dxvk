@@ -12,6 +12,7 @@ namespace dxvk {
   
   bool DxvkShaderModuleCreateInfo::eq(const DxvkShaderModuleCreateInfo& other) const {
     bool eq = fsDualSrcBlend  == other.fsDualSrcBlend
+           && fsSecondaryOutput == other.fsSecondaryOutput
            && fsFlatShading   == other.fsFlatShading
            && undefinedInputs == other.undefinedInputs;
 
@@ -29,6 +30,7 @@ namespace dxvk {
   size_t DxvkShaderModuleCreateInfo::hash() const {
     DxvkHashState hash;
     hash.add(uint32_t(fsDualSrcBlend));
+    hash.add(uint32_t(fsSecondaryOutput));
     hash.add(uint32_t(fsFlatShading));
     hash.add(undefinedInputs);
 
@@ -74,7 +76,10 @@ namespace dxvk {
     std::vector<uint32_t> sampleMaskIds;
 
     SpirvCodeBuffer code = std::move(spirv);
-    uint32_t o1VarId = 0;
+    std::unordered_map<uint32_t, size_t> locationZeroOffsets;
+    std::unordered_map<uint32_t, size_t> locationOneOffsets;
+    std::unordered_map<uint32_t, size_t> indexOffsets;
+    std::unordered_set<uint32_t> outputVars;
     
     for (auto ins : code) {
       if (ins.opCode() == spv::OpDecorate) {
@@ -104,13 +109,15 @@ namespace dxvk {
             m_specConstantMask |= 1u << ins.arg(3);
         }
 
-        if (ins.arg(2) == spv::DecorationLocation && ins.arg(3) == 1) {
-          m_o1LocOffset = ins.offset() + 3;
-          o1VarId = ins.arg(1);
+        if (ins.arg(2) == spv::DecorationLocation) {
+          if (ins.arg(3) == 0)
+            locationZeroOffsets.insert({ ins.arg(1), ins.offset() + 3 });
+          else if (ins.arg(3) == 1)
+            locationOneOffsets.insert({ ins.arg(1), ins.offset() + 3 });
         }
-        
-        if (ins.arg(2) == spv::DecorationIndex && ins.arg(1) == o1VarId)
-          m_o1IdxOffset = ins.offset() + 3;
+
+        if (ins.arg(2) == spv::DecorationIndex)
+          indexOffsets.insert({ ins.arg(1), ins.offset() + 3 });
       }
 
       if (ins.opCode() == spv::OpMemberDecorate) {
@@ -148,6 +155,8 @@ namespace dxvk {
 
       if (ins.opCode() == spv::OpVariable) {
         if (ins.arg(3) == spv::StorageClassOutput) {
+          outputVars.insert(ins.arg(2));
+
           if (std::find(sampleMaskIds.begin(), sampleMaskIds.end(), ins.arg(2)) != sampleMaskIds.end())
             m_flags.set(DxvkShaderFlag::ExportsSampleMask);
         }
@@ -158,6 +167,25 @@ namespace dxvk {
 
       // Ignore the actual shader code, there's nothing interesting for us in there.
       if (ins.opCode() == spv::OpFunction)
+        break;
+    }
+
+    for (uint32_t varId : outputVars) {
+      const auto locationZero = locationZeroOffsets.find(varId);
+      const auto locationOne = locationOneOffsets.find(varId);
+      const auto index = indexOffsets.find(varId);
+
+      if (locationZero != locationZeroOffsets.end()
+       && index != indexOffsets.end())
+        m_o0LocOffset = locationZero->second;
+
+      if (locationOne != locationOneOffsets.end()
+       && index != indexOffsets.end()) {
+        m_o1LocOffset = locationOne->second;
+        m_o1IdxOffset = index->second;
+      }
+
+      if (m_o0LocOffset && m_o1LocOffset)
         break;
     }
 
@@ -205,7 +233,9 @@ namespace dxvk {
 
     // For dual-source blending we need to re-map
     // location 1, index 0 to location 0, index 1
-    if (state.fsDualSrcBlend && m_o1IdxOffset && m_o1LocOffset)
+    if (state.fsSecondaryOutput && m_o0LocOffset && m_o1LocOffset)
+      std::swap(code[m_o0LocOffset], code[m_o1LocOffset]);
+    else if (state.fsDualSrcBlend && m_o1IdxOffset && m_o1LocOffset)
       std::swap(code[m_o1IdxOffset], code[m_o1LocOffset]);
     
     // Replace undefined input variables with zero

@@ -17,6 +17,7 @@
 #include "../util/util_misc.h"
 #include "../util/util_sleep.h"
 #include "../util/util_time.h"
+#include "../util/util_winehua_api_trace.h"
 
 namespace dxvk {
 
@@ -37,6 +38,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiOutput::QueryInterface(REFIID riid, void** ppvObject) {
+    WINEHUA_API_TRACE();
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -73,6 +75,7 @@ namespace dxvk {
     const DXGI_MODE_DESC *pModeToMatch,
           DXGI_MODE_DESC *pClosestMatch,
           IUnknown       *pConcernedDevice) {
+    WINEHUA_API_TRACE();
     if (!pModeToMatch || !pClosestMatch)
       return DXGI_ERROR_INVALID_CALL;
     
@@ -107,6 +110,7 @@ namespace dxvk {
     const DXGI_MODE_DESC1*      pModeToMatch,
           DXGI_MODE_DESC1*      pClosestMatch,
           IUnknown*             pConcernedDevice) {
+    WINEHUA_API_TRACE();
     if (!pModeToMatch || !pClosestMatch)
       return DXGI_ERROR_INVALID_CALL;
 
@@ -185,6 +189,7 @@ namespace dxvk {
 
 
   HRESULT STDMETHODCALLTYPE DxgiOutput::GetDesc(DXGI_OUTPUT_DESC *pDesc) {
+    WINEHUA_API_TRACE();
     if (pDesc == nullptr)
       return DXGI_ERROR_INVALID_CALL;
 
@@ -205,6 +210,7 @@ namespace dxvk {
 
   HRESULT STDMETHODCALLTYPE DxgiOutput::GetDesc1(
           DXGI_OUTPUT_DESC1*    pDesc) {
+    WINEHUA_API_TRACE();
     if (pDesc == nullptr)
       return DXGI_ERROR_INVALID_CALL;
     
@@ -252,6 +258,7 @@ namespace dxvk {
           UINT           Flags,
           UINT*          pNumModes,
           DXGI_MODE_DESC* pDesc) {
+    WINEHUA_API_TRACE();
     if (pNumModes == nullptr)
       return DXGI_ERROR_INVALID_CALL;
     
@@ -282,6 +289,7 @@ namespace dxvk {
           UINT                  Flags,
           UINT*                 pNumModes,
           DXGI_MODE_DESC1*      pDesc) {
+    WINEHUA_API_TRACE();
     if (pNumModes == nullptr)
       return DXGI_ERROR_INVALID_CALL;
     

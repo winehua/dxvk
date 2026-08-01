@@ -73,6 +73,7 @@ namespace dxvk {
    */
   struct DxvkShaderModuleCreateInfo {
     bool      fsDualSrcBlend  = false;
+    bool      fsSecondaryOutput = false;
     bool      fsFlatShading   = false;
     uint32_t  undefinedInputs = 0;
     VkPrimitiveTopology inputTopology = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
@@ -261,6 +262,7 @@ namespace dxvk {
     DxvkShaderKey                 m_key;
     size_t                        m_hash = 0;
 
+    size_t                        m_o0LocOffset = 0;
     size_t                        m_o1IdxOffset = 0;
     size_t                        m_o1LocOffset = 0;
 

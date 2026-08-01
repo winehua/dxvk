@@ -1,7 +1,25 @@
 #include "dxvk_cmdlist.h"
 #include "dxvk_device.h"
 
+#include "../util/util_winehua_api_trace.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <functional>
+#include <limits>
+
 namespace dxvk {
+
+  static std::atomic<bool> g_winehuaMappedFlushBatchLogged = { false };
+  static std::atomic<uint64_t> g_winehuaMappedFlushLists = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushQueuedRanges = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushEmittedRanges = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushCalls = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushQueuedBytes = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushEmittedBytes = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushWholeRanges = { 0 };
+  static std::atomic<uint64_t> g_winehuaMappedFlushFailures = { 0 };
 
   DxvkCommandSubmission::DxvkCommandSubmission() {
 
@@ -255,6 +273,10 @@ namespace dxvk {
     const auto& transfer = m_device->queues().transfer;
     const auto& sparse = m_device->queues().sparse;
 
+    const VkResult mappedFlushResult = flushWineHuaMappedFlushes();
+    if (mappedFlushResult != VK_SUCCESS)
+      return mappedFlushResult;
+
     m_commandSubmission.reset();
 
     for (size_t i = 0; i < m_cmdSubmissions.size(); i++) {
@@ -371,6 +393,149 @@ namespace dxvk {
 
     return VK_SUCCESS;
   }
+
+
+  VkResult DxvkCommandList::queueWineHuaMappedFlush(
+    const Rc<DxvkResourceAllocation>& storage,
+    const VkMappedMemoryRange&        range) {
+    if (!g_winehuaMappedFlushBatchLogged.exchange(true))
+      Logger::info("WineHua: modern command-list-owned mapped flush batching enabled");
+
+    WineHuaMappedFlush pending;
+    pending.storage = storage;
+    pending.range = range;
+    pending.range.pNext = nullptr;
+    m_winehuaMappedFlushes.push_back(std::move(pending));
+    return VK_SUCCESS;
+  }
+
+
+  VkResult DxvkCommandList::flushWineHuaMappedFlushes() {
+    if (m_winehuaMappedFlushes.empty())
+      return VK_SUCCESS;
+
+    const bool collectStats = winehuaBatchMappedFlushStatsEnabled();
+    const uint64_t queuedRangeCount = m_winehuaMappedFlushes.size();
+    uint64_t emittedRangeCount = 0;
+    uint64_t flushCallCount = 0;
+    uint64_t queuedBytes = 0;
+    uint64_t emittedBytes = 0;
+    uint64_t wholeRangeCount = 0;
+
+    const auto memoryLess = [] (VkDeviceMemory a, VkDeviceMemory b) {
+      return std::less<VkDeviceMemory>()(a, b);
+    };
+
+    std::sort(m_winehuaMappedFlushes.begin(), m_winehuaMappedFlushes.end(),
+      [&memoryLess] (const WineHuaMappedFlush& a,
+                     const WineHuaMappedFlush& b) {
+        if (memoryLess(a.range.memory, b.range.memory))
+          return true;
+        if (memoryLess(b.range.memory, a.range.memory))
+          return false;
+        return a.range.offset < b.range.offset;
+      });
+
+    const auto rangeEnd = [] (const VkMappedMemoryRange& range) {
+      if (range.size == VK_WHOLE_SIZE
+       || range.size > std::numeric_limits<VkDeviceSize>::max() - range.offset)
+        return std::numeric_limits<VkDeviceSize>::max();
+      return range.offset + range.size;
+    };
+
+    constexpr uint32_t MaxRangesPerCall = 256;
+    std::array<VkMappedMemoryRange, MaxRangesPerCall> ranges;
+    uint32_t rangeCount = 0;
+
+    const auto flushRanges = [&] () {
+      if (!rangeCount)
+        return VK_SUCCESS;
+
+      if (collectStats) {
+        emittedRangeCount += rangeCount;
+        flushCallCount += 1;
+        for (uint32_t i = 0; i < rangeCount; i++) {
+          if (ranges[i].size == VK_WHOLE_SIZE)
+            wholeRangeCount += 1;
+          else
+            emittedBytes += ranges[i].size;
+        }
+      }
+
+      const VkResult result = m_vkd->vkFlushMappedMemoryRanges(
+        m_vkd->device(), rangeCount, ranges.data());
+      rangeCount = 0;
+      return result;
+    };
+
+    for (const auto& entry : m_winehuaMappedFlushes) {
+      const auto& range = entry.range;
+      if (!range.size)
+        continue;
+
+      if (collectStats && range.size != VK_WHOLE_SIZE)
+        queuedBytes += range.size;
+
+      if (rangeCount) {
+        auto& previous = ranges[rangeCount - 1];
+        const bool sameMemory = !memoryLess(previous.memory, range.memory)
+                             && !memoryLess(range.memory, previous.memory);
+        const VkDeviceSize previousEnd = rangeEnd(previous);
+        if (sameMemory && range.offset <= previousEnd) {
+          const VkDeviceSize mergedEnd = std::max(previousEnd, rangeEnd(range));
+          previous.size = mergedEnd == std::numeric_limits<VkDeviceSize>::max()
+            ? VK_WHOLE_SIZE
+            : mergedEnd - previous.offset;
+          continue;
+        }
+      }
+
+      if (rangeCount == MaxRangesPerCall) {
+        const VkResult result = flushRanges();
+        if (result != VK_SUCCESS) {
+          if (collectStats)
+            g_winehuaMappedFlushFailures.fetch_add(1);
+          return result;
+        }
+      }
+
+      ranges[rangeCount++] = range;
+    }
+
+    const VkResult result = flushRanges();
+    if (collectStats) {
+      if (result != VK_SUCCESS)
+        g_winehuaMappedFlushFailures.fetch_add(1);
+
+      const uint64_t lists = g_winehuaMappedFlushLists.fetch_add(1) + 1;
+      const uint64_t queuedRanges =
+        g_winehuaMappedFlushQueuedRanges.fetch_add(queuedRangeCount) + queuedRangeCount;
+      const uint64_t emittedRanges =
+        g_winehuaMappedFlushEmittedRanges.fetch_add(emittedRangeCount) + emittedRangeCount;
+      const uint64_t calls =
+        g_winehuaMappedFlushCalls.fetch_add(flushCallCount) + flushCallCount;
+      const uint64_t totalQueuedBytes =
+        g_winehuaMappedFlushQueuedBytes.fetch_add(queuedBytes) + queuedBytes;
+      const uint64_t totalEmittedBytes =
+        g_winehuaMappedFlushEmittedBytes.fetch_add(emittedBytes) + emittedBytes;
+      const uint64_t wholeRanges =
+        g_winehuaMappedFlushWholeRanges.fetch_add(wholeRangeCount) + wholeRangeCount;
+
+      if (lists <= 8 || !(lists % 120)) {
+        Logger::info(str::format(
+          "WineHuaModernMappedFlushPerf: lists=", lists,
+          " queued_ranges=", queuedRanges,
+          " emitted_ranges=", emittedRanges,
+          " calls=", calls,
+          " queued_bytes=", totalQueuedBytes,
+          " emitted_bytes=", totalEmittedBytes,
+          " whole_ranges=", wholeRanges,
+          " failures=", g_winehuaMappedFlushFailures.load()));
+      }
+    }
+
+    return result;
+  }
   
   
   void DxvkCommandList::init() {
@@ -452,6 +617,8 @@ namespace dxvk {
       pipeline->releasePipeline();
 
     m_pipelines.clear();
+
+    m_winehuaMappedFlushes.clear();
 
     m_waitSemaphores.clear();
     m_signalSemaphores.clear();

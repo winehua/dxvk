@@ -1,8 +1,12 @@
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 
+#include "d3d11_bc.h"
 #include "d3d11_context.h"
 #include "d3d11_context_def.h"
 #include "d3d11_context_imm.h"
+#include "../util/util_winehua_api_trace.h"
 
 namespace dxvk {
 
@@ -48,6 +52,30 @@ namespace dxvk {
       bufferUsage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 
     m_allocationCache = m_device->createAllocationCache(bufferUsage, memoryFlags);
+
+    const char* disableSamplerEmulation =
+      std::getenv("WINEHUA_DXVK_DISABLE_CUSTOM_BORDER_EMULATION");
+    m_samplerEmulationEnabled = !Device->features()
+      .extCustomBorderColor.customBorderColorWithoutFormat
+      && !(disableSamplerEmulation && disableSamplerEmulation[0] == '1');
+
+    if (m_samplerEmulationEnabled) {
+      for (uint32_t i = 0; i < m_samplerEmulationBuffers.size(); i++) {
+        const auto programType = DxbcProgramType(i);
+
+        DxvkBufferCreateInfo info;
+        info.size   = sizeof(SamplerEmulationStageData);
+        info.usage  = VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                    | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        info.stages = VK_PIPELINE_STAGE_TRANSFER_BIT
+                    | util::pipelineStages(GetShaderStage(programType));
+        info.access = VK_ACCESS_TRANSFER_WRITE_BIT
+                    | VK_ACCESS_UNIFORM_READ_BIT;
+
+        m_samplerEmulationBuffers[i] = Device->createBuffer(
+          info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+      }
+    }
   }
 
 
@@ -112,6 +140,7 @@ namespace dxvk {
 
   template<typename ContextType>
   void STDMETHODCALLTYPE D3D11CommonContext<ContextType>::ClearState() {
+    WINEHUA_API_TRACE();
     D3D10DeviceLock lock = LockContext();
 
     ResetCommandListState();
@@ -3593,6 +3622,28 @@ namespace dxvk {
 
   template<typename ContextType>
   template<DxbcProgramType ShaderStage>
+  void D3D11CommonContext<ContextType>::UpdateSamplerEmulationBuffer() {
+    if (!m_samplerEmulationEnabled)
+      return;
+
+    constexpr uint32_t stageId = uint32_t(ShaderStage);
+
+    EmitCs([
+      cBuffer = m_samplerEmulationBuffers[stageId],
+      cData   = m_samplerEmulationData[stageId]
+    ] (DxvkContext* ctx) mutable {
+      constexpr VkShaderStageFlagBits stage = GetShaderStage(ShaderStage);
+      const uint32_t slotId = computeConstantBufferBinding(
+        ShaderStage, DxbcConstBufBindingCount - 1);
+
+      ctx->updateBuffer(cBuffer, 0, sizeof(cData), cData.data());
+      ctx->bindUniformBuffer(stage, slotId, DxvkBufferSlice(cBuffer));
+    });
+  }
+
+
+  template<typename ContextType>
+  template<DxbcProgramType ShaderStage>
   void D3D11CommonContext<ContextType>::BindShader(
     const D3D11CommonShader*    pShaderModule) {
     uint64_t oldUavMask = m_state.lazy.bindingsUsed[ShaderStage].uavMask;
@@ -3617,7 +3668,10 @@ namespace dxvk {
 
       EmitCs([
         cBuffer = std::move(buffer),
-        cShader = std::move(shader)
+        cShader = std::move(shader),
+        cSamplerInfo = m_samplerEmulationEnabled
+          ? m_samplerEmulationBuffers[uint32_t(ShaderStage)]
+          : nullptr
       ] (DxvkContext* ctx) mutable {
         constexpr VkShaderStageFlagBits stage = GetShaderStage(ShaderStage);
 
@@ -3628,6 +3682,12 @@ namespace dxvk {
           Forwarder::move(cShader));
         ctx->bindUniformBuffer(stage, slotId,
           Forwarder::move(cBuffer));
+
+        if (cSamplerInfo) {
+          ctx->bindUniformBuffer(stage,
+            computeConstantBufferBinding(ShaderStage, DxbcConstBufBindingCount - 1),
+            DxvkBufferSlice(cSamplerInfo));
+        }
       });
     } else {
       // Mark shader stage as inactive and clean since we'll have no active
@@ -4782,9 +4842,13 @@ namespace dxvk {
         auto programType = DxbcProgramType(i);
         auto stage = GetShaderStage(programType);
 
-        // Unbind constant buffers, including the shader's ICB
+        // Unbind constant buffers, including the shader's ICB and the
+        // WineHua sampler-emulation buffer.
         auto cbSlotId = computeConstantBufferBinding(programType, 0);
-        ctx->bindUniformBuffer(stage, cbSlotId + D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, DxvkBufferSlice());
+
+        for (uint32_t j = D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT;
+             j < DxbcConstBufBindingCount; j++)
+          ctx->bindUniformBuffer(stage, cbSlotId + j, DxvkBufferSlice());
 
         for (uint32_t j = 0; j < cUsedBindings.stages[i].cbvCount; j++)
           ctx->bindUniformBuffer(stage, cbSlotId + j, DxvkBufferSlice());
@@ -4849,6 +4913,18 @@ namespace dxvk {
     m_state.srv.reset();
     m_state.uav.reset();
     m_state.samplers.reset();
+
+    if (m_samplerEmulationEnabled) {
+      for (auto& stage : m_samplerEmulationData)
+        stage = { };
+
+      UpdateSamplerEmulationBuffer<DxbcProgramType::VertexShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::HullShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::DomainShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::GeometryShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::PixelShader>();
+      UpdateSamplerEmulationBuffer<DxbcProgramType::ComputeShader>();
+    }
 
     // Reset dirty tracking
     m_state.lazy.reset();
@@ -5040,6 +5116,23 @@ namespace dxvk {
 
     for (uint32_t i = 0; i < bindings.maxCount; i++)
       BindSampler(Stage, i, bindings.samplers[i]);
+
+    switch (Stage) {
+      case DxbcProgramType::VertexShader:
+        UpdateSamplerEmulationBuffer<DxbcProgramType::VertexShader>(); break;
+      case DxbcProgramType::HullShader:
+        UpdateSamplerEmulationBuffer<DxbcProgramType::HullShader>(); break;
+      case DxbcProgramType::DomainShader:
+        UpdateSamplerEmulationBuffer<DxbcProgramType::DomainShader>(); break;
+      case DxbcProgramType::GeometryShader:
+        UpdateSamplerEmulationBuffer<DxbcProgramType::GeometryShader>(); break;
+      case DxbcProgramType::PixelShader:
+        UpdateSamplerEmulationBuffer<DxbcProgramType::PixelShader>(); break;
+      case DxbcProgramType::ComputeShader:
+        UpdateSamplerEmulationBuffer<DxbcProgramType::ComputeShader>(); break;
+      default:
+        break;
+    }
   }
 
 
@@ -5211,6 +5304,7 @@ namespace dxvk {
           UINT                              NumSamplers,
           ID3D11SamplerState* const*        ppSamplers) {
     auto& bindings = m_state.samplers[ShaderStage];
+    bool samplerInfoChanged = false;
 
     for (uint32_t i = 0; i < NumSamplers; i++) {
       auto sampler = static_cast<D3D11SamplerState*>(ppSamplers[i]);
@@ -5218,10 +5312,21 @@ namespace dxvk {
       if (bindings.samplers[StartSlot + i] != sampler) {
         bindings.samplers[StartSlot + i] = sampler;
 
+        if (m_samplerEmulationEnabled) {
+          m_samplerEmulationData[uint32_t(ShaderStage)][StartSlot + i]
+            = sampler
+            ? sampler->GetEmulationData()
+            : D3D11SamplerEmulationData();
+          samplerInfoChanged = true;
+        }
+
         if (!DirtySampler(ShaderStage, StartSlot + i, !sampler))
           BindSampler(ShaderStage, StartSlot + i, sampler);
       }
     }
+
+    if (samplerInfoChanged)
+      UpdateSamplerEmulationBuffer<ShaderStage>();
 
     bindings.maxCount = std::clamp(StartSlot + NumSamplers,
       bindings.maxCount, uint32_t(bindings.samplers.size()));
@@ -5483,10 +5588,21 @@ namespace dxvk {
       DxvkBufferSlice stagingSlice = AllocStagingBuffer(Length);
       std::memcpy(stagingSlice.mapPtr(0), pSrcData, Length);
 
+      const bool batchMappedFlush = winehuaBatchMappedFlushEnabled();
+      if (!batchMappedFlush
+       && stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle()) != VK_SUCCESS)
+        throw DxvkError("WineHua: Failed to flush UpdateSubresource buffer data");
+
       EmitCs([
+        cStagingStorage = stagingSlice.buffer()->storage(),
         cStagingSlice = std::move(stagingSlice),
-        cBufferSlice  = std::move(bufferSlice)
+        cBufferSlice  = std::move(bufferSlice),
+        cBatchMappedFlush = batchMappedFlush
       ] (DxvkContext* ctx) {
+        if (cBatchMappedFlush
+         && ctx->flushMappedBuffer(cStagingSlice.buffer(), cStagingStorage,
+              cStagingSlice.getSliceHandle()) != VK_SUCCESS)
+          Logger::err("WineHua: Failed to queue UpdateSubresource buffer flush");
         ctx->copyBuffer(
           cBufferSlice.buffer(),
           cBufferSlice.offset(),
@@ -5544,12 +5660,39 @@ namespace dxvk {
     if (!util::isBlockAligned(offset, extent, formatInfo->blockSize, mipExtent))
       return;
 
+    const bool bcEmulated = pDstTexture->HasImage()
+                         && formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
+                         && !pDstTexture->GetImage()->formatInfo()->flags.test(DxvkFormatFlag::BlockCompressed);
+    if (bcEmulated) {
+      D3D11CpuImage converted;
+      if (!DecodeD3D11BcImage(packedFormat, extent,
+            pSrcData, SrcRowPitch, SrcDepthPitch, converted)) {
+        Logger::err("WineHua: Failed to decompress BC UpdateSubresource data");
+        return;
+      }
+
+      auto stagingSlice = AllocStagingBuffer(converted.data.size());
+      std::memcpy(stagingSlice.mapPtr(0), converted.data.data(), converted.data.size());
+      if (!winehuaBatchMappedFlushEnabled()
+       && stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle()) != VK_SUCCESS)
+        throw DxvkError("WineHua: Failed to flush BC UpdateSubresource data");
+      UpdateImage(pDstTexture, &subresource, offset, extent, std::move(stagingSlice));
+
+      if constexpr (!IsDeferred)
+        static_cast<ContextType*>(this)->ThrottleAllocation();
+      return;
+    }
+
     auto stagingSlice = AllocStagingBuffer(util::computeImageDataSize(packedFormat, extent));
 
     util::packImageData(stagingSlice.mapPtr(0),
       pSrcData, SrcRowPitch, SrcDepthPitch, 0, 0,
       pDstTexture->GetVkImageType(), extent, 1,
       formatInfo, formatInfo->aspectMask);
+
+    if (!winehuaBatchMappedFlushEnabled()
+     && stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle()) != VK_SUCCESS)
+      throw DxvkError("WineHua: Failed to flush UpdateSubresource texture data");
 
     UpdateImage(pDstTexture, &subresource,
       offset, extent, std::move(stagingSlice));
@@ -5567,6 +5710,25 @@ namespace dxvk {
           VkExtent3D                        DstExtent,
           DxvkBufferSlice                   StagingBuffer) {
     bool dstIsImage = pDstTexture->HasImage();
+    const auto packedFormat = pDstTexture->GetPackedFormat();
+    const bool bcEmulated = dstIsImage
+                         && lookupFormatInfo(packedFormat)->flags.test(DxvkFormatFlag::BlockCompressed)
+                         && !pDstTexture->GetImage()->formatInfo()->flags.test(DxvkFormatFlag::BlockCompressed);
+    const VkFormat uploadFormat = bcEmulated
+      ? pDstTexture->GetImage()->info().format
+      : packedFormat;
+
+    if (winehuaBatchMappedFlushEnabled()) {
+      EmitCs([
+        cStagingBuffer = StagingBuffer.buffer(),
+        cStagingStorage = StagingBuffer.buffer()->storage(),
+        cStagingSlice = StagingBuffer.getSliceHandle()
+      ] (DxvkContext* ctx) {
+        if (ctx->flushMappedBuffer(cStagingBuffer, cStagingStorage,
+              cStagingSlice) != VK_SUCCESS)
+          Logger::err("WineHua: Failed to queue UpdateSubresource texture flush");
+      });
+    }
 
     uint32_t dstSubresource = D3D11CalcSubresource(pDstSubresource->mipLevel,
       pDstSubresource->arrayLayer, pDstTexture->Desc()->MipLevels);
@@ -5578,7 +5740,7 @@ namespace dxvk {
         cDstOffset        = DstOffset,
         cDstExtent        = DstExtent,
         cStagingSlice     = std::move(StagingBuffer),
-        cPackedFormat     = pDstTexture->GetPackedFormat()
+        cPackedFormat     = uploadFormat
       ] (DxvkContext* ctx) {
         ctx->copyBufferToImage(cDstImage,
           cDstLayers, cDstOffset, cDstExtent,

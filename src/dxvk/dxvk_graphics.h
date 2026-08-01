@@ -36,6 +36,12 @@ namespace dxvk {
 
   using DxvkGraphicsPipelineFlags = Flags<DxvkGraphicsPipelineFlag>;
 
+  enum class WineHuaDualSrcVariant : uint8_t {
+    None,
+    Primary,
+    Secondary,
+  };
+
 
   /**
    * \brief Vertex input info for graphics pipelines
@@ -243,7 +249,8 @@ namespace dxvk {
 
     DxvkGraphicsPipelineShaderState(
       const DxvkGraphicsPipelineShaders&    shaders,
-      const DxvkGraphicsPipelineStateInfo&  state);
+      const DxvkGraphicsPipelineStateInfo&  state,
+            bool                           secondaryOutput = false);
 
     DxvkShaderModuleCreateInfo vsInfo;
     DxvkShaderModuleCreateInfo tcsInfo;
@@ -260,7 +267,8 @@ namespace dxvk {
     DxvkShaderModuleCreateInfo getCreateInfo(
       const DxvkGraphicsPipelineShaders&    shaders,
       const Rc<DxvkShader>&                 shader,
-      const DxvkGraphicsPipelineStateInfo&  state);
+      const DxvkGraphicsPipelineStateInfo&  state,
+            bool                           secondaryOutput);
 
     Rc<DxvkShader> getPrevStageShader(
       const DxvkGraphicsPipelineShaders&    shaders,
@@ -367,18 +375,21 @@ namespace dxvk {
       const DxvkGraphicsPipelineStateInfo&  state_,
             VkPipeline                      baseHandle_,
             VkPipeline                      fastHandle_,
-            DxvkAttachmentMask              attachments_)
+            DxvkAttachmentMask              attachments_,
+            WineHuaDualSrcVariant           dualSrcVariant_)
     : state       (state_),
       baseHandle  (baseHandle_),
       fastHandle  (fastHandle_),
       isCompiling (fastHandle_ != VK_NULL_HANDLE),
-      attachments (attachments_) { }
+      attachments (attachments_),
+      dualSrcVariant(dualSrcVariant_) { }
 
     DxvkGraphicsPipelineStateInfo state;
     std::atomic<VkPipeline>       baseHandle  = { VK_NULL_HANDLE };
     std::atomic<VkPipeline>       fastHandle  = { VK_NULL_HANDLE };
     std::atomic<VkBool32>         isCompiling = { VK_FALSE };
     DxvkAttachmentMask            attachments = { };
+    WineHuaDualSrcVariant         dualSrcVariant = WineHuaDualSrcVariant::None;
 
     DxvkGraphicsPipelineHandle getHandle() const {
       // Find a pipeline handle to use. If no optimized pipeline has
@@ -436,8 +447,9 @@ namespace dxvk {
       const DxvkGraphicsPipelineShaders&      shaders,
       const DxvkGraphicsPipelineStateInfo&    state,
             DxvkGraphicsPipelineFlags         flags,
-            uint32_t                          specConstantMask)
-    : shState(shaders, state),
+            uint32_t                          specConstantMask,
+            WineHuaDualSrcVariant             dualSrcVariant = WineHuaDualSrcVariant::None)
+    : shState(shaders, state, dualSrcVariant == WineHuaDualSrcVariant::Secondary),
       dyState(device, state, flags),
       viState(device, state, shaders),
       prState(device, state, shaders),
@@ -559,7 +571,8 @@ namespace dxvk {
      * \returns Pipeline handle and handle type
      */
     DxvkGraphicsPipelineHandle getPipelineHandle(
-      const DxvkGraphicsPipelineStateInfo&    state);
+      const DxvkGraphicsPipelineStateInfo&    state,
+            WineHuaDualSrcVariant             dualSrcVariant = WineHuaDualSrcVariant::None);
     
     /**
      * \brief Compiles a pipeline
@@ -639,10 +652,12 @@ namespace dxvk {
 
     DxvkGraphicsPipelineInstance* createInstance(
       const DxvkGraphicsPipelineStateInfo& state,
-            bool                           doCreateBasePipeline);
+            bool                           doCreateBasePipeline,
+            WineHuaDualSrcVariant          dualSrcVariant = WineHuaDualSrcVariant::None);
     
     DxvkGraphicsPipelineInstance* findInstance(
-      const DxvkGraphicsPipelineStateInfo& state);
+      const DxvkGraphicsPipelineStateInfo& state,
+            WineHuaDualSrcVariant          dualSrcVariant = WineHuaDualSrcVariant::None);
 
     bool canCreateBasePipeline(
       const DxvkGraphicsPipelineStateInfo& state) const;
@@ -654,7 +669,8 @@ namespace dxvk {
       const DxvkGraphicsPipelineBaseInstanceKey& key) const;
     
     VkPipeline getOptimizedPipeline(
-      const DxvkGraphicsPipelineStateInfo& state);
+      const DxvkGraphicsPipelineStateInfo& state,
+            WineHuaDualSrcVariant          dualSrcVariant = WineHuaDualSrcVariant::None);
 
     VkPipeline createOptimizedPipeline(
       const DxvkGraphicsPipelineFastInstanceKey& key) const;

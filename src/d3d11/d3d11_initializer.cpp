@@ -1,8 +1,11 @@
 #include <cstring>
 
+#include "d3d11_bc.h"
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
 #include "d3d11_initializer.h"
+
+#include "../util/util_winehua_api_trace.h"
 
 namespace dxvk {
 
@@ -92,10 +95,21 @@ namespace dxvk {
     if (IcbSize < icbSlice.length())
       std::memset(srcSlice.mapPtr(IcbSize), 0, icbSlice.length() - IcbSize);
 
+    const bool batchMappedFlush = winehuaBatchMappedFlushEnabled();
+    if (!batchMappedFlush
+     && srcSlice.buffer()->flushMappedSlice(srcSlice.getSliceHandle()) != VK_SUCCESS)
+      throw DxvkError("WineHua: Failed to flush shader ICB staging data");
+
     EmitCs([
       cIcbSlice = std::move(icbSlice),
-      cSrcSlice = std::move(srcSlice)
+      cSrcStorage = srcSlice.buffer()->storage(),
+      cSrcSlice = std::move(srcSlice),
+      cBatchMappedFlush = batchMappedFlush
     ] (DxvkContext* ctx) {
+      if (cBatchMappedFlush
+       && ctx->flushMappedBuffer(cSrcSlice.buffer(), cSrcStorage,
+            cSrcSlice.getSliceHandle()) != VK_SUCCESS)
+        Logger::err("WineHua: Failed to queue shader ICB staging flush");
       ctx->copyBuffer(cIcbSlice.buffer(), cIcbSlice.offset(),
         cSrcSlice.buffer(), cSrcSlice.offset(), cIcbSlice.length());
     });
@@ -115,15 +129,56 @@ namespace dxvk {
       auto stagingSlice = m_stagingBuffer.alloc(buffer->info().size);
       std::memcpy(stagingSlice.mapPtr(0), pInitialData->pSysMem, stagingSlice.length());
 
+      const bool batchMappedFlush = winehuaBatchMappedFlushEnabled();
+      if (!batchMappedFlush
+       && stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle()) != VK_SUCCESS)
+        throw DxvkError("WineHua: Failed to flush initial buffer staging data");
+
       m_transferCommands += 1;
+
+      static std::atomic<uint64_t> geometryTraceCounter { 0 };
+      uint64_t geometryTraceId = 0;
+      const bool traceGeometry = winehuaGeometryTraceSample(
+        geometryTraceCounter, geometryTraceId, stagingSlice.length());
+
+      if (traceGeometry) {
+        const auto desc = pBuffer->Desc();
+        const auto sourceSlice = stagingSlice.getSliceHandle();
+        const auto destinationSlice = buffer->getSliceHandle();
+        const uint64_t sampleHash = winehuaGeometryTraceHash(
+          pInitialData->pSysMem, stagingSlice.length());
+
+        Logger::info(str::format(
+          "WineHua geometry-trace: init#", geometryTraceId,
+          " resource=0x", std::hex, reinterpret_cast<uintptr_t>(pBuffer),
+          " virtualDst=0x", reinterpret_cast<uintptr_t>(buffer.ptr()),
+          " byteWidth=", std::dec, desc->ByteWidth,
+          " bindFlags=0x", std::hex, desc->BindFlags,
+          " usage=", std::dec, uint32_t(desc->Usage),
+          " sampleHash=0x", std::hex, sampleHash,
+          " stagingBuffer=0x", sourceSlice.handle,
+          " stagingOffset=", std::dec, sourceSlice.offset,
+          " stagingLength=", sourceSlice.length,
+          " dstBuffer=0x", std::hex, destinationSlice.handle,
+          " dstOffset=", std::dec, destinationSlice.offset,
+          " dstLength=", destinationSlice.length));
+      }
 
       EmitCs([
         cBuffer       = buffer,
-        cStagingSlice = std::move(stagingSlice)
+        cStagingStorage = stagingSlice.buffer()->storage(),
+        cStagingSlice = std::move(stagingSlice),
+        cGeometryTraceId = traceGeometry ? geometryTraceId : 0,
+        cBatchMappedFlush = batchMappedFlush
       ] (DxvkContext* ctx) {
+        if (cBatchMappedFlush
+         && ctx->flushMappedBuffer(cStagingSlice.buffer(), cStagingStorage,
+              cStagingSlice.getSliceHandle()) != VK_SUCCESS)
+          Logger::err("WineHua: Failed to queue initial buffer staging flush");
         ctx->uploadBuffer(cBuffer,
           cStagingSlice.buffer(),
-          cStagingSlice.offset());
+          cStagingSlice.offset(),
+          cGeometryTraceId);
       });
     } else {
       m_transferCommands += 1;
@@ -149,6 +204,22 @@ namespace dxvk {
       std::memcpy(pBuffer->GetMapPtr(), pInitialData->pSysMem, pBuffer->Desc()->ByteWidth);
     else
       std::memset(pBuffer->GetMapPtr(), 0, pBuffer->Desc()->ByteWidth);
+
+    auto buffer = pBuffer->GetBuffer();
+    if (!winehuaBatchMappedFlushEnabled()) {
+      if (buffer->flushMappedSlice(buffer->getSliceHandle()) != VK_SUCCESS)
+        throw DxvkError("WineHua: Failed to flush initial mapped buffer data");
+      return;
+    }
+
+    EmitCs([
+      cBuffer = buffer,
+      cStorage = buffer->storage(),
+      cSlice = buffer->getSliceHandle()
+    ] (DxvkContext* ctx) {
+      if (ctx->flushMappedBuffer(cBuffer, cStorage, cSlice) != VK_SUCCESS)
+        Logger::err("WineHua: Failed to queue initial mapped buffer flush");
+    });
   }
 
 
@@ -163,6 +234,11 @@ namespace dxvk {
 
     VkFormat packedFormat = m_parent->LookupPackedFormat(desc->Format, pTexture->GetFormatMode()).Format;
     auto formatInfo = lookupFormatInfo(packedFormat);
+    const bool bcEmulated = pTexture->HasImage()
+                         && formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
+                         && !image->formatInfo()->flags.test(DxvkFormatFlag::BlockCompressed);
+    const VkFormat uploadFormat = bcEmulated ? image->info().format : packedFormat;
+    const auto uploadFormatInfo = lookupFormatInfo(uploadFormat);
 
     if (pInitialData != nullptr && pInitialData->pSysMem != nullptr) {
       // Compute data size for all subresources and allocate staging buffer memory
@@ -173,7 +249,7 @@ namespace dxvk {
 
         for (uint32_t mip = 0; mip < image->info().mipLevels; mip++) {
           dataSize += image->info().numLayers * align(util::computeImageDataSize(
-            packedFormat, image->mipLevelExtent(mip), formatInfo->aspectMask), CACHE_LINE_SIZE);
+            uploadFormat, image->mipLevelExtent(mip), uploadFormatInfo->aspectMask), CACHE_LINE_SIZE);
         }
 
         stagingSlice = m_stagingBuffer.alloc(dataSize);
@@ -190,13 +266,24 @@ namespace dxvk {
 
           if (pTexture->HasImage()) {
             VkDeviceSize mipSizePerLayer = util::computeImageDataSize(
-              packedFormat, image->mipLevelExtent(mip), formatInfo->aspectMask);
+              uploadFormat, image->mipLevelExtent(mip), uploadFormatInfo->aspectMask);
 
             m_transferCommands += 1;
 
-            util::packImageData(stagingSlice.mapPtr(dataOffset),
-              pInitialData[index].pSysMem, pInitialData[index].SysMemPitch, pInitialData[index].SysMemSlicePitch,
-              0, 0, pTexture->GetVkImageType(), mipLevelExtent, 1, formatInfo, formatInfo->aspectMask);
+            if (bcEmulated) {
+              D3D11CpuImage converted;
+              if (!DecodeD3D11BcImage(packedFormat, mipLevelExtent,
+                    pInitialData[index].pSysMem, pInitialData[index].SysMemPitch,
+                    pInitialData[index].SysMemSlicePitch, converted)
+               || converted.data.size() != mipSizePerLayer)
+                throw DxvkError("WineHua: Failed to decompress initial BC texture data");
+              std::memcpy(stagingSlice.mapPtr(dataOffset),
+                converted.data.data(), converted.data.size());
+            } else {
+              util::packImageData(stagingSlice.mapPtr(dataOffset),
+                pInitialData[index].pSysMem, pInitialData[index].SysMemPitch, pInitialData[index].SysMemSlicePitch,
+                0, 0, pTexture->GetVkImageType(), mipLevelExtent, 1, formatInfo, formatInfo->aspectMask);
+            }
 
             dataOffset += align(mipSizePerLayer, CACHE_LINE_SIZE);
           }
@@ -211,11 +298,22 @@ namespace dxvk {
 
       // Upload all subresources of the image in one go
       if (pTexture->HasImage()) {
+        const bool batchMappedFlush = winehuaBatchMappedFlushEnabled();
+        if (!batchMappedFlush
+         && stagingSlice.buffer()->flushMappedSlice(stagingSlice.getSliceHandle()) != VK_SUCCESS)
+          throw DxvkError("WineHua: Failed to flush initial texture staging data");
+
         EmitCs([
           cImage        = std::move(image),
+          cStagingStorage = stagingSlice.buffer()->storage(),
           cStagingSlice = std::move(stagingSlice),
-          cFormat       = packedFormat
+          cFormat       = uploadFormat,
+          cBatchMappedFlush = batchMappedFlush
         ] (DxvkContext* ctx) {
+          if (cBatchMappedFlush
+           && ctx->flushMappedBuffer(cStagingSlice.buffer(), cStagingStorage,
+                cStagingSlice.getSliceHandle()) != VK_SUCCESS)
+            Logger::err("WineHua: Failed to queue initial texture staging flush");
           ctx->uploadImage(cImage,
             cStagingSlice.buffer(),
             cStagingSlice.offset(),

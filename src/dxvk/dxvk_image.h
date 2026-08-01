@@ -427,6 +427,10 @@ namespace dxvk {
     void* mapPtr(VkDeviceSize offset) const {
       return reinterpret_cast<char*>(m_imageInfo.mapPtr) + offset;
     }
+
+    VkResult invalidateMappedRange(
+            VkDeviceSize offset,
+            VkDeviceSize length) const;
     
     /**
      * \brief Image format info
@@ -699,6 +703,8 @@ namespace dxvk {
     Rc<vk::DeviceFn>            m_vkd;
     DxvkMemoryAllocator*        m_allocator   = nullptr;
     VkMemoryPropertyFlags       m_properties  = 0u;
+    VkDeviceSize                m_nonCoherentAtomSize = 1u;
+    bool                        m_forceMappedInvalidate = false;
     VkShaderStageFlags          m_shaderStages = 0u;
 
     DxvkImageCreateInfo         m_info        = { };

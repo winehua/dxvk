@@ -3,6 +3,7 @@
 #include "dxgi_swapchain.h"
 
 #include "../util/util_misc.h"
+#include "../util/util_winehua_api_trace.h"
 
 #include <d3d12.h>
 
@@ -23,6 +24,7 @@ namespace dxvk {
     m_presenter (pPresenter),
     m_monitor   (wsi::getWindowMonitor(m_window)),
     m_is_d3d12(SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D12CommandQueue), reinterpret_cast<void**>(&Com<ID3D12CommandQueue>())))) {
+    WINEHUA_API_TRACE();
 
     if (FAILED(m_presenter->GetAdapter(__uuidof(IDXGIAdapter), reinterpret_cast<void**>(&m_adapter))))
       throw DxvkError("DXGI: Failed to get adapter for present device");
@@ -71,6 +73,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiSwapChain::QueryInterface(REFIID riid, void** ppvObject) {
+    WINEHUA_API_TRACE();
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -108,6 +111,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiSwapChain::GetBuffer(UINT Buffer, REFIID riid, void** ppSurface) {
+    WINEHUA_API_TRACE();
     return m_presenter->GetImage(Buffer, riid, ppSurface);
   }
 
@@ -321,6 +325,7 @@ namespace dxvk {
   
   
   HRESULT STDMETHODCALLTYPE DxgiSwapChain::Present(UINT SyncInterval, UINT Flags) {
+    WINEHUA_API_TRACE();
     return PresentBase(SyncInterval, Flags, nullptr);
   }
 
@@ -336,6 +341,7 @@ namespace dxvk {
           UINT                      SyncInterval,
           UINT                      PresentFlags,
     const DXGI_PRESENT_PARAMETERS*  pPresentParameters) {
+    WINEHUA_API_TRACE();
 
     if (SyncInterval > 4)
       return DXGI_ERROR_INVALID_CALL;
@@ -401,6 +407,7 @@ namespace dxvk {
           UINT                      Height,
           DXGI_FORMAT               NewFormat,
           UINT                      SwapChainFlags) {
+    WINEHUA_API_TRACE();
     return ResizeBuffers1(BufferCount, Width, Height,
       NewFormat, SwapChainFlags, nullptr, nullptr);
   }
@@ -414,6 +421,7 @@ namespace dxvk {
           UINT                      SwapChainFlags,
     const UINT*                     pCreationNodeMask,
           IUnknown* const*          ppPresentQueue) {
+    WINEHUA_API_TRACE();
     if (!wsi::isWindow(m_window))
       return DXGI_ERROR_INVALID_CALL;
 
@@ -447,6 +455,7 @@ namespace dxvk {
 
 
   HRESULT STDMETHODCALLTYPE DxgiSwapChain::ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters) {
+    WINEHUA_API_TRACE();
     std::lock_guard<dxvk::recursive_mutex> lock(m_lockWindow);
 
     if (!pNewTargetParameters)
@@ -496,6 +505,7 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE DxgiSwapChain::SetFullscreenState(
           BOOL          Fullscreen,
           IDXGIOutput*  pTarget) {
+    WINEHUA_API_TRACE();
     std::lock_guard<dxvk::recursive_mutex> lock(m_lockWindow);
 
     if (!Fullscreen && pTarget)

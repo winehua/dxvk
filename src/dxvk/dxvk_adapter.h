@@ -137,6 +137,10 @@ namespace dxvk {
     const DxvkDeviceInfo& devicePropertiesExt() const {
       return m_deviceInfo;
     }
+
+    bool isWineHuaVenus() const {
+      return m_deviceInfo.vk12.driverID == VK_DRIVER_ID_MESA_VENUS;
+    }
     
     /**
      * \brief Supportred device features

@@ -1,6 +1,9 @@
 #include "dxvk_barrier.h"
 #include "dxvk_buffer.h"
+#include "dxvk_cmdlist.h"
 #include "dxvk_device.h"
+
+#include "../util/util_winehua_api_trace.h"
 
 #include <algorithm>
 
@@ -14,9 +17,11 @@ namespace dxvk {
   : m_vkd           (device->vkd()),
     m_allocator     (&allocator),
     m_properties    (memFlags),
+    m_nonCoherentAtomSize(device->properties().core.properties.limits.nonCoherentAtomSize),
     m_shaderStages  (util::shaderStages(createInfo.stages)),
     m_sharingMode   (device->getSharingMode()),
-    m_info          (createInfo) {
+    m_info          (createInfo),
+    m_forceMappedFlush(device->adapter()->isWineHuaVenus()) {
     m_allocator->registerResource(this);
 
     // Assign debug name to buffer
@@ -41,10 +46,12 @@ namespace dxvk {
   : m_vkd           (device->vkd()),
     m_allocator     (&allocator),
     m_properties    (memFlags),
+    m_nonCoherentAtomSize(device->properties().core.properties.limits.nonCoherentAtomSize),
     m_shaderStages  (util::shaderStages(createInfo.stages)),
     m_sharingMode   (device->getSharingMode()),
     m_info          (createInfo),
-    m_stableAddress (true) {
+    m_stableAddress (true),
+    m_forceMappedFlush(device->adapter()->isWineHuaVenus()) {
     m_allocator->registerResource(this);
 
     DxvkAllocationInfo allocationInfo = { };
@@ -68,6 +75,104 @@ namespace dxvk {
   bool DxvkBuffer::canRelocate() const {
     return !m_bufferInfo.mapPtr && !m_stableAddress
         && !(m_info.flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT);
+  }
+
+
+  VkResult DxvkBuffer::flushMappedSlice(
+    const DxvkBufferSliceHandle& slice,
+          DxvkCommandList*       commandList) const {
+    return flushMappedSlice(m_storage, slice, commandList);
+  }
+
+
+  VkResult DxvkBuffer::flushMappedSlice(
+    const Rc<DxvkResourceAllocation>& storage,
+    const DxvkBufferSliceHandle&      slice,
+          DxvkCommandList*            commandList) const {
+    if (!m_forceMappedFlush || !slice.length)
+      return VK_SUCCESS;
+
+    if (!storage)
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    const auto bufferInfo = storage->getBufferInfo();
+    const auto memoryInfo = storage->getMemoryInfo();
+
+    if (!memoryInfo.memory || !bufferInfo.mapPtr
+     || slice.handle != bufferInfo.buffer
+     || slice.offset < bufferInfo.offset)
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    const VkDeviceSize sliceOffset = slice.offset - bufferInfo.offset;
+    if (sliceOffset > memoryInfo.size || slice.length > memoryInfo.size - sliceOffset)
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    const VkDeviceSize atom = std::max(VkDeviceSize(1u), m_nonCoherentAtomSize);
+    const VkDeviceSize sliceBegin = memoryInfo.offset + sliceOffset;
+    const VkDeviceSize rangeOffset = (sliceBegin / atom) * atom;
+    const VkDeviceSize rangeEnd = align(sliceBegin + slice.length, atom);
+
+    VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
+    range.memory = memoryInfo.memory;
+    range.offset = rangeOffset;
+    range.size = rangeEnd - rangeOffset;
+
+    const VkResult result = winehuaBatchMappedFlushEnabled() && commandList
+      ? commandList->queueWineHuaMappedFlush(storage, range)
+      : m_vkd->vkFlushMappedMemoryRanges(m_vkd->device(), 1, &range);
+
+    static std::atomic<uint64_t> mappedTraceCounter { 0 };
+    uint64_t traceSequence = 0;
+    if (winehuaMappedTraceSample(mappedTraceCounter, traceSequence)) {
+      Logger::info(str::format(
+        "WineHua mapped-trace: vkFlush#", traceSequence,
+        " storage=0x", std::hex, reinterpret_cast<uintptr_t>(storage.ptr()),
+        " buffer=0x", slice.handle,
+        " bufferInfoOffset=", std::dec, bufferInfo.offset,
+        " sliceOffset=", slice.offset,
+        " sliceLength=", slice.length,
+        " localOffset=", sliceOffset,
+        " memory=0x", std::hex, memoryInfo.memory,
+        " memoryOffset=", std::dec, memoryInfo.offset,
+        " memorySize=", memoryInfo.size,
+        " rangeOffset=", range.offset,
+        " rangeSize=", range.size,
+        " atom=", atom,
+        " result=", int32_t(result)));
+    }
+
+    return result;
+  }
+
+
+  VkResult DxvkBuffer::invalidateMappedSlice(
+    const DxvkBufferSliceHandle& slice) const {
+    if (!m_forceMappedFlush || !slice.length)
+      return VK_SUCCESS;
+
+    const auto bufferInfo = m_storage->getBufferInfo();
+    const auto memoryInfo = m_storage->getMemoryInfo();
+
+    if (!memoryInfo.memory || !bufferInfo.mapPtr
+     || slice.handle != bufferInfo.buffer
+     || slice.offset < bufferInfo.offset)
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    const VkDeviceSize sliceOffset = slice.offset - bufferInfo.offset;
+    if (sliceOffset > memoryInfo.size || slice.length > memoryInfo.size - sliceOffset)
+      return VK_ERROR_MEMORY_MAP_FAILED;
+
+    const VkDeviceSize atom = std::max(VkDeviceSize(1u), m_nonCoherentAtomSize);
+    const VkDeviceSize sliceBegin = memoryInfo.offset + sliceOffset;
+    const VkDeviceSize rangeOffset = (sliceBegin / atom) * atom;
+    const VkDeviceSize rangeEnd = align(sliceBegin + slice.length, atom);
+
+    VkMappedMemoryRange range = { VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE };
+    range.memory = memoryInfo.memory;
+    range.offset = rangeOffset;
+    range.size = rangeEnd - rangeOffset;
+
+    return m_vkd->vkInvalidateMappedMemoryRanges(m_vkd->device(), 1, &range);
   }
 
 

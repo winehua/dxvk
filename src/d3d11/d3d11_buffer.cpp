@@ -1,7 +1,11 @@
+#include <atomic>
+
 #include "d3d11_buffer.h"
 #include "d3d11_context.h"
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
+
+#include "../util/util_env.h"
 
 namespace dxvk {
   
@@ -100,6 +104,7 @@ namespace dxvk {
       m_buffer = m_parent->GetDXVKDevice()->importBuffer(info, importInfo, GetMemoryFlags());
       m_cookie = m_buffer->cookie();
       m_mapPtr = m_buffer->mapPtr(0);
+      m_mapStorage = m_buffer->storage();
       m_mapMode = DetermineMapMode(m_buffer->memFlags());
     } else if (!(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL)) {
       VkMemoryPropertyFlags memoryFlags = GetMemoryFlags();
@@ -110,6 +115,7 @@ namespace dxvk {
       m_buffer = m_parent->GetDXVKDevice()->createBuffer(info, memoryFlags);
       m_cookie = m_buffer->cookie();
       m_mapPtr = m_buffer->mapPtr(0);
+      m_mapStorage = m_buffer->storage();
     } else {
       m_sparseAllocator = m_parent->GetDXVKDevice()->createSparsePageAllocator();
       m_sparseAllocator->setCapacity(info.size / SparseMemoryPageSize);
@@ -351,6 +357,22 @@ namespace dxvk {
                     |  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
                     |  VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
         break;
+    }
+
+    const bool forceHostVisibleGeometry =
+      m_desc.Usage == D3D11_USAGE_IMMUTABLE
+      && (m_desc.BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER))
+      && env::getEnvVar("DXVK_WINEHUA_HOST_VISIBLE_GEOMETRY") == "1";
+
+    if (forceHostVisibleGeometry) {
+      memoryFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                  |  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+      static std::atomic<uint32_t> logged { 0u };
+      if (logged.fetch_add(1u, std::memory_order_relaxed) == 0u) {
+        Logger::info(
+          "WineHua geometry-storage A/B: immutable vertex/index buffers host-visible");
+      }
     }
     
     bool useCached = (m_parent->GetOptions()->cachedDynamicResources == ~0u)

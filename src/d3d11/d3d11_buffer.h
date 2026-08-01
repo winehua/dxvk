@@ -126,11 +126,24 @@ namespace dxvk {
     Rc<DxvkResourceAllocation> DiscardSlice(DxvkLocalAllocationCache* cache) {
       auto allocation = m_buffer->allocateStorage(cache);
       m_mapPtr = allocation->mapPtr();
+      m_mapStorage = allocation;
       return allocation;
     }
 
     void* GetMapPtr() const {
       return m_mapPtr;
+    }
+
+    void SetMapType(D3D11_MAP mapType) {
+      m_mapType = mapType;
+    }
+
+    D3D11_MAP GetMapType() const {
+      return m_mapType;
+    }
+
+    Rc<DxvkResourceAllocation> GetMapStorage() const {
+      return m_mapStorage;
     }
 
     D3D10Buffer* GetD3D10Iface() {
@@ -196,6 +209,8 @@ namespace dxvk {
     uint64_t                      m_seq = 0ull;
 
     void*                         m_mapPtr = nullptr;
+    Rc<DxvkResourceAllocation>    m_mapStorage;
+    D3D11_MAP                     m_mapType = D3D11_MAP(~0u);
 
     D3D11DXGIResource             m_resource;
     D3D10Buffer                   m_d3d10;

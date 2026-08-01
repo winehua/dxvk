@@ -35,13 +35,23 @@ namespace dxvk {
     if (this_thread::isInModuleDetachment())
       return;
 
+    const bool traceRestart = env::getEnvVar("DXVK_WINEHUA_TRACE_DEVICE_RESTART") == "1";
+    if (traceRestart)
+      Logger::info("WineHua device-restart: DxvkDevice destroy wait-idle begin");
+
     // Wait for all pending Vulkan commands to be
     // executed before we destroy any resources.
     this->waitForIdle();
 
+    if (traceRestart)
+      Logger::info("WineHua device-restart: DxvkDevice destroy wait-idle end");
+
     // Stop workers explicitly in order to prevent
     // access to structures that are being destroyed.
     m_objects.pipelineManager().stopWorkerThreads();
+
+    if (traceRestart)
+      Logger::info("WineHua device-restart: DxvkDevice pipeline workers stopped");
   }
 
 

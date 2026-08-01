@@ -110,6 +110,11 @@ namespace dxvk {
       const VkDebugUtilsLabelEXT*       reason,
             DxvkSubmitStatus*           status);
 
+    VkResult flushMappedBuffer(
+      const Rc<DxvkBuffer>&              buffer,
+      const Rc<DxvkResourceAllocation>&  storage,
+      const DxvkBufferSliceHandle&       slice);
+
     /**
      * \brief Synchronizes command list with WSI
      *
@@ -1085,7 +1090,8 @@ namespace dxvk {
     void uploadBuffer(
       const Rc<DxvkBuffer>&           buffer,
       const Rc<DxvkBuffer>&           source,
-            VkDeviceSize              sourceOffset);
+            VkDeviceSize              sourceOffset,
+            uint64_t                  winehuaTraceId = 0);
     
     /**
      * \brief Uses transfer queue to initialize image

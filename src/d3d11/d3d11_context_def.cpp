@@ -1,6 +1,8 @@
 #include "d3d11_context_def.h"
 #include "d3d11_device.h"
 
+#include "../util/util_winehua_api_trace.h"
+
 namespace dxvk {
   
   D3D11DeferredContext::D3D11DeferredContext(
@@ -275,11 +277,49 @@ namespace dxvk {
     pMappedResource->RowPitch     = pBuffer->Desc()->ByteWidth;
     pMappedResource->DepthPitch   = pBuffer->Desc()->ByteWidth;
 
+    static std::atomic<uint64_t> mappedTraceCounter { 0 };
+    const bool traceMapped = winehuaMappedTraceEnabled()
+                          && pBuffer->Desc()->ByteWidth <= 64;
+    const uint64_t traceSequence = traceMapped
+      ? mappedTraceCounter.fetch_add(1, std::memory_order_relaxed) + 1
+      : 0;
+    const auto traceSlice = pBuffer->GetBuffer()->getSliceHandle(bufferSlice);
+
+    if (traceMapped) {
+      Logger::info(str::format(
+        "WineHua deferred-mapped-trace: map#", traceSequence,
+        " storage=0x", std::hex, reinterpret_cast<uintptr_t>(bufferSlice.ptr()),
+        " buffer=0x", traceSlice.handle,
+        " sliceOffset=", std::dec, traceSlice.offset,
+        " sliceLength=", traceSlice.length));
+    }
+
     EmitCs([
       cDstBuffer = pBuffer->GetBuffer(),
-      cDstSlice  = std::move(bufferSlice)
+      cDstSlice  = std::move(bufferSlice),
+      traceMapped,
+      traceSequence
     ] (DxvkContext* ctx) {
+      const auto slice = cDstBuffer->getSliceHandle(cDstSlice);
+
+      if (traceMapped) {
+        Logger::info(str::format(
+          "WineHua deferred-mapped-trace: replay#", traceSequence,
+          " storage=0x", std::hex, reinterpret_cast<uintptr_t>(cDstSlice.ptr()),
+          " buffer=0x", slice.handle,
+          " sliceOffset=", std::dec, slice.offset,
+          " sliceLength=", slice.length));
+      }
+
       ctx->invalidateBuffer(cDstBuffer, Rc<DxvkResourceAllocation>(cDstSlice));
+
+      const VkResult result = ctx->flushMappedBuffer(cDstBuffer, cDstSlice, slice);
+      if (traceMapped)
+        Logger::info(str::format(
+          "WineHua deferred-mapped-trace: flush#", traceSequence,
+          " result=", int32_t(result)));
+      if (result != VK_SUCCESS)
+        Logger::err("WineHua: Failed to flush deferred mapped buffer");
     });
 
     AddMapEntry(pBuffer->GetCookie(), *pMappedResource);

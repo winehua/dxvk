@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <vector>
@@ -5,6 +6,8 @@
 
 #include "dxvk_device.h"
 #include "dxvk_context.h"
+
+#include "../util/util_winehua_api_trace.h"
 
 namespace dxvk {
   
@@ -64,6 +67,14 @@ namespace dxvk {
   
   DxvkContext::~DxvkContext() {
     
+  }
+
+
+  VkResult DxvkContext::flushMappedBuffer(
+    const Rc<DxvkBuffer>&              buffer,
+    const Rc<DxvkResourceAllocation>&  storage,
+    const DxvkBufferSliceHandle&       slice) {
+    return buffer->flushMappedSlice(storage, slice, m_cmd.ptr());
   }
   
   
@@ -1727,7 +1738,175 @@ namespace dxvk {
   void DxvkContext::drawGeneric(
           uint32_t                  count,
     const T*                        draws) {
+    const auto& blend = m_state.gp.state.omBlend[0];
+    bool singleColorTarget = m_state.om.renderTargets.color[0].view != nullptr;
+
+    for (uint32_t i = 1; i < MaxNumRenderTargets; i++)
+      singleColorTarget &= m_state.om.renderTargets.color[i].view == nullptr;
+
+    const bool emulateDualSource =
+      !m_device->features().core.features.dualSrcBlend
+      && singleColorTarget
+      && m_state.gp.shaders.fs != nullptr
+      && (m_state.gp.shaders.fs->info().outputMask & 0x2u)
+      && !m_state.gp.flags.any(
+        DxvkGraphicsPipelineFlag::HasTransformFeedback,
+        DxvkGraphicsPipelineFlag::HasStorageDescriptors)
+      && !m_state.gp.state.om.enableLogicOp()
+      && !m_state.gp.state.ds.enableDepthTest()
+      && !m_state.gp.state.ds.enableStencilTest()
+      && !m_state.gp.state.ms.enableAlphaToCoverage()
+      && blend.colorWriteMask()
+      && blend.blendEnable()
+      && blend.srcColorBlendFactor() == VK_BLEND_FACTOR_ONE
+      && blend.dstColorBlendFactor() == VK_BLEND_FACTOR_SRC1_COLOR
+      && blend.colorBlendOp() == VK_BLEND_OP_ADD
+      && blend.srcAlphaBlendFactor() == VK_BLEND_FACTOR_ONE
+      && blend.dstAlphaBlendFactor() == VK_BLEND_FACTOR_SRC1_ALPHA
+      && blend.alphaBlendOp() == VK_BLEND_OP_ADD;
+
+    if (unlikely(emulateDualSource)) {
+      const WineHuaDualSrcMode dualSrcMode = winehuaDualSrcMode();
+      const bool runSecondary = dualSrcMode != WineHuaDualSrcMode::PrimaryReplace;
+      const bool runPrimary = dualSrcMode != WineHuaDualSrcMode::SecondaryReplace;
+      const bool replaceSecondary =
+        dualSrcMode == WineHuaDualSrcMode::SecondaryReplace;
+      const bool replacePrimary =
+        dualSrcMode == WineHuaDualSrcMode::PrimaryReplace;
+      DxvkGraphicsPipelineStateInfo originalState = m_state.gp.state;
+      DxvkGraphicsPipelineStateInfo secondaryState = originalState;
+      DxvkGraphicsPipelineStateInfo primaryState = originalState;
+
+      secondaryState.omBlend[0] = DxvkOmAttachmentBlend(
+        VK_TRUE,
+        replaceSecondary ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO,
+        replaceSecondary ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_SRC_COLOR,
+        VK_BLEND_OP_ADD,
+        replaceSecondary ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO,
+        replaceSecondary ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_SRC_ALPHA,
+        VK_BLEND_OP_ADD,
+        blend.colorWriteMask());
+      primaryState.omBlend[0] = DxvkOmAttachmentBlend(
+        VK_TRUE,
+        VK_BLEND_FACTOR_ONE,
+        replacePrimary ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE,
+        VK_BLEND_OP_ADD,
+        VK_BLEND_FACTOR_ONE,
+        replacePrimary ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE,
+        VK_BLEND_OP_ADD,
+        blend.colorWriteMask());
+
+      // Do not bind an invalid dual-source pipeline first. Commit all other
+      // graphics state against the primary single-source variant, then issue
+      // the secondary and primary passes explicitly.
+      m_state.gp.state = primaryState;
+      m_flags.set(DxvkContextFlag::GpDirtyPipelineState);
+
+      if (this->commitGraphicsState<Indexed, false>()) {
+        auto secondaryPipeline = runSecondary
+          ? m_state.gp.pipeline->getPipelineHandle(
+              secondaryState, WineHuaDualSrcVariant::Secondary)
+          : DxvkGraphicsPipelineHandle();
+        auto primaryPipeline = runPrimary
+          ? m_state.gp.pipeline->getPipelineHandle(
+              primaryState, WineHuaDualSrcVariant::Primary)
+          : DxvkGraphicsPipelineHandle();
+
+        if ((!runSecondary || secondaryPipeline.handle)
+         && (!runPrimary || primaryPipeline.handle)) {
+          static std::atomic<uint32_t> logged = { 0u };
+
+          if (logged.fetch_add(1u, std::memory_order_relaxed) == 0u) {
+            Logger::info(str::format(
+              "WineHuaDualSrcEmulation: mode=",
+              winehuaDualSrcModeName(dualSrcMode), " fs=",
+              m_state.gp.shaders.fs->debugName()));
+          }
+
+          if (runSecondary)
+            m_state.om.attachmentMask.merge(secondaryPipeline.attachments);
+          if (runPrimary)
+            m_state.om.attachmentMask.merge(primaryPipeline.attachments);
+
+          auto emitPass = [&] (VkPipeline pipeline) {
+            m_cmd->cmdBindPipeline(DxvkCmdBuffer::ExecBuffer,
+              VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+            for (uint32_t i = 0; i < count; i++) {
+              if constexpr (Indexed) {
+                m_cmd->cmdDrawIndexed(draws[i].indexCount, draws[i].instanceCount,
+                  draws[i].firstIndex, draws[i].vertexOffset, draws[i].firstInstance);
+              } else {
+                m_cmd->cmdDraw(draws[i].vertexCount, draws[i].instanceCount,
+                  draws[i].firstVertex, draws[i].firstInstance);
+              }
+            }
+          };
+
+          if (runSecondary)
+            emitPass(secondaryPipeline.handle);
+          if (runPrimary)
+            emitPass(primaryPipeline.handle);
+          m_cmd->addStatCtr(DxvkStatCounter::CmdDrawCalls,
+            (uint32_t(runSecondary) + uint32_t(runPrimary)) * count);
+        } else {
+          static std::atomic<uint32_t> failures = { 0u };
+
+          if (failures.fetch_add(1u, std::memory_order_relaxed) == 0u)
+            Logger::err("WineHuaDualSrcEmulation: failed to create two-pass pipelines");
+        }
+      }
+
+      m_state.gp.state = originalState;
+      m_flags.set(DxvkContextFlag::GpDirtyPipelineState);
+      return;
+    }
+
     if (this->commitGraphicsState<Indexed, false>()) {
+      if constexpr (Indexed) {
+        static std::atomic<uint64_t> geometryTraceCounter { 0 };
+
+        for (uint32_t i = 0; i < count; i++) {
+          uint64_t geometryTraceId = 0;
+          if (!winehuaGeometryTraceSample(geometryTraceCounter,
+              geometryTraceId, uint64_t(draws[i].indexCount)))
+            continue;
+
+          const auto indexInfo = m_state.vi.indexBuffer.getDescriptor();
+          Logger::info(str::format(
+            "WineHua geometry-trace: draw-indexed#", geometryTraceId,
+            " indexVirtual=0x", std::hex,
+              reinterpret_cast<uintptr_t>(m_state.vi.indexBuffer.buffer().ptr()),
+            " indexBuffer=0x", indexInfo.buffer.buffer,
+            " indexOffset=", std::dec, indexInfo.buffer.offset,
+            " indexRange=", indexInfo.buffer.range,
+            " indexType=", uint32_t(m_state.vi.indexType),
+            " indexCount=", draws[i].indexCount,
+            " instanceCount=", draws[i].instanceCount,
+            " firstIndex=", draws[i].firstIndex,
+            " vertexOffset=", draws[i].vertexOffset,
+            " firstInstance=", draws[i].firstInstance));
+
+          for (uint32_t j = 0; j < m_state.gp.state.il.bindingCount(); j++) {
+            const uint32_t binding = m_state.gp.state.ilBindings[j].binding();
+            if (!m_state.vi.vertexBuffers[binding].length())
+              continue;
+
+            const auto vertexInfo = m_state.vi.vertexBuffers[binding].getDescriptor();
+            Logger::info(str::format(
+              "WineHua geometry-trace: draw-vertex#", geometryTraceId,
+              " slot=", binding,
+              " virtual=0x", std::hex,
+                reinterpret_cast<uintptr_t>(m_state.vi.vertexBuffers[binding].buffer().ptr()),
+              " buffer=0x", vertexInfo.buffer.buffer,
+              " offset=", std::dec, vertexInfo.buffer.offset,
+              " range=", vertexInfo.buffer.range,
+              " stride=", m_state.vi.vertexStrides[binding],
+              " extent=", m_state.vi.vertexExtents[j]));
+          }
+        }
+      }
+
       if (count == 1u) {
         // Most common case, just emit a single draw
         if constexpr (Indexed) {
@@ -2749,24 +2928,74 @@ namespace dxvk {
   void DxvkContext::uploadBuffer(
     const Rc<DxvkBuffer>&           buffer,
     const Rc<DxvkBuffer>&           source,
-          VkDeviceSize              sourceOffset) {
+          VkDeviceSize              sourceOffset,
+          uint64_t                  winehuaTraceId) {
     auto bufferSlice = buffer->getSliceHandle();
     auto sourceSlice = source->getSliceHandle(sourceOffset, buffer->info().size);
 
-    VkBufferCopy2 copyRegion = { VK_STRUCTURE_TYPE_BUFFER_COPY_2 };
-    copyRegion.srcOffset = sourceSlice.offset;
-    copyRegion.dstOffset = bufferSlice.offset;
-    copyRegion.size      = bufferSlice.length;
+    if (winehuaTraceId) {
+      Logger::info(str::format(
+        "WineHua geometry-trace: copy#", winehuaTraceId,
+        " virtualSrc=0x", std::hex, reinterpret_cast<uintptr_t>(source.ptr()),
+        " virtualDst=0x", reinterpret_cast<uintptr_t>(buffer.ptr()),
+        " srcBuffer=0x", sourceSlice.handle,
+        " srcOffset=", std::dec, sourceSlice.offset,
+        " srcLength=", sourceSlice.length,
+        " dstBuffer=0x", std::hex, bufferSlice.handle,
+        " dstOffset=", std::dec, bufferSlice.offset,
+        " dstLength=", bufferSlice.length));
+    }
 
-    VkCopyBufferInfo2 copyInfo = { VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2 };
-    copyInfo.srcBuffer = sourceSlice.handle;
-    copyInfo.dstBuffer = bufferSlice.handle;
-    copyInfo.regionCount = 1;
-    copyInfo.pRegions = &copyRegion;
+    static const std::string winehuaCopyMode =
+      env::getEnvVar("DXVK_WINEHUA_INITIAL_BUFFER_COPY");
+    const bool legacyCopy = winehuaCopyMode == "legacy"
+                         || winehuaCopyMode == "exec";
+    const DxvkCmdBuffer cmdBuffer = winehuaCopyMode == "exec"
+      || winehuaCopyMode == "exec2"
+      ? DxvkCmdBuffer::ExecBuffer
+      : DxvkCmdBuffer::SdmaBuffer;
 
-    m_cmd->cmdCopyBuffer(DxvkCmdBuffer::SdmaBuffer, &copyInfo);
+    if (legacyCopy) {
+      VkBufferCopy copyRegion = { };
+      copyRegion.srcOffset = sourceSlice.offset;
+      copyRegion.dstOffset = bufferSlice.offset;
+      copyRegion.size      = bufferSlice.length;
 
-    accessBufferTransfer(*buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+      m_cmd->cmdCopyBufferLegacy(cmdBuffer,
+        sourceSlice.handle, bufferSlice.handle, 1, &copyRegion);
+    } else {
+      VkBufferCopy2 copyRegion = { VK_STRUCTURE_TYPE_BUFFER_COPY_2 };
+      copyRegion.srcOffset = sourceSlice.offset;
+      copyRegion.dstOffset = bufferSlice.offset;
+      copyRegion.size      = bufferSlice.length;
+
+      VkCopyBufferInfo2 copyInfo = { VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2 };
+      copyInfo.srcBuffer = sourceSlice.handle;
+      copyInfo.dstBuffer = bufferSlice.handle;
+      copyInfo.regionCount = 1;
+      copyInfo.pRegions = &copyRegion;
+
+      m_cmd->cmdCopyBuffer(cmdBuffer, &copyInfo);
+    }
+
+    if (cmdBuffer == DxvkCmdBuffer::SdmaBuffer) {
+      accessBufferTransfer(*buffer,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    } else {
+      accessBuffer(cmdBuffer, *buffer, 0, buffer->info().size,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, DxvkAccessOp::None);
+    }
+
+    if (!winehuaCopyMode.empty()) {
+      static std::atomic<uint32_t> logged { 0u };
+      if (logged.fetch_add(1u, std::memory_order_relaxed) == 0u) {
+        Logger::info(str::format(
+          "WineHua initial-buffer-copy A/B: mode=", winehuaCopyMode,
+          " commandBuffer=", cmdBuffer == DxvkCmdBuffer::ExecBuffer ? "exec" : "sdma",
+          " command=", legacyCopy ? "vkCmdCopyBuffer" : "vkCmdCopyBuffer2"));
+      }
+    }
 
     m_cmd->track(source, DxvkAccess::Read);
     m_cmd->track(buffer, DxvkAccess::Write);
@@ -6874,6 +7103,21 @@ namespace dxvk {
     m_flags.clr(DxvkContextFlag::GpDirtyIndexBuffer);
     auto bufferInfo = m_state.vi.indexBuffer.getDescriptor();
 
+    static std::atomic<uint64_t> geometryTraceCounter { 0 };
+    uint64_t geometryTraceId = 0;
+    if (winehuaGeometryTraceSample(geometryTraceCounter,
+        geometryTraceId, m_state.vi.indexBuffer.length())) {
+      Logger::info(str::format(
+        "WineHua geometry-trace: index-bind#", geometryTraceId,
+        " virtual=0x", std::hex,
+          reinterpret_cast<uintptr_t>(m_state.vi.indexBuffer.buffer().ptr()),
+        " virtualOffset=", std::dec, m_state.vi.indexBuffer.offset(),
+        " buffer=0x", std::hex, bufferInfo.buffer.buffer,
+        " offset=", std::dec, bufferInfo.buffer.offset,
+        " range=", bufferInfo.buffer.range,
+        " indexType=", uint32_t(m_state.vi.indexType)));
+    }
+
     if (m_features.test(DxvkContextFeature::IndexBufferRobustness)) {
       VkDeviceSize align = m_state.vi.indexType == VK_INDEX_TYPE_UINT16 ? 2 : 4;
       VkDeviceSize range = bufferInfo.buffer.range & ~(align - 1);
@@ -6914,7 +7158,20 @@ namespace dxvk {
     std::array<VkDeviceSize, MaxNumVertexBindings> strides;
     
     bool oldDynamicStrides = m_flags.test(DxvkContextFlag::GpDynamicVertexStrides);
-    bool newDynamicStrides = true;
+    static const bool forceStaticVertexStrides =
+      env::getEnvVar("DXVK_WINEHUA_STATIC_VERTEX_STRIDE") == "1";
+    bool newDynamicStrides = !forceStaticVertexStrides;
+
+    static std::atomic<uint64_t> geometryTraceCounter { 0 };
+    uint64_t geometryTraceId = 0;
+    const bool traceGeometry = winehuaGeometryTraceSample(
+      geometryTraceCounter, geometryTraceId);
+
+    if (forceStaticVertexStrides) {
+      static std::atomic<uint32_t> logged { 0 };
+      if (logged.fetch_add(1, std::memory_order_relaxed) == 0)
+        Logger::info("WineHua vertex-stride A/B: static pipeline stride and legacy buffer binding enabled");
+    }
 
     // Set buffer handles and offsets for active bindings
     for (uint32_t i = 0; i < m_state.gp.state.il.bindingCount(); i++) {
@@ -6927,6 +7184,20 @@ namespace dxvk {
         offsets[i] = vbo.buffer.offset;
         lengths[i] = vbo.buffer.range;
         strides[i] = m_state.vi.vertexStrides[binding];
+
+        if (traceGeometry) {
+          Logger::info(str::format(
+            "WineHua geometry-trace: vertex-bind#", geometryTraceId,
+            " slot=", binding,
+            " virtual=0x", std::hex,
+              reinterpret_cast<uintptr_t>(m_state.vi.vertexBuffers[binding].buffer().ptr()),
+            " virtualOffset=", std::dec, m_state.vi.vertexBuffers[binding].offset(),
+            " buffer=0x", std::hex, buffers[i],
+            " offset=", std::dec, offsets[i],
+            " range=", lengths[i],
+            " stride=", strides[i],
+            " extent=", m_state.vi.vertexExtents[i]));
+        }
 
         if (strides[i]) {
           // Dynamic strides are only allowed if the stride is not smaller
@@ -6969,9 +7240,14 @@ namespace dxvk {
 
     // Vertex bindigs get remapped when compiling the
     // pipeline, so this actually does the right thing
-    m_cmd->cmdBindVertexBuffers(0, m_state.gp.state.il.bindingCount(),
-      buffers.data(), offsets.data(), lengths.data(),
-      newDynamicStrides ? strides.data() : nullptr);
+    if (forceStaticVertexStrides) {
+      m_cmd->cmdBindVertexBuffersLegacy(0, m_state.gp.state.il.bindingCount(),
+        buffers.data(), offsets.data());
+    } else {
+      m_cmd->cmdBindVertexBuffers(0, m_state.gp.state.il.bindingCount(),
+        buffers.data(), offsets.data(), lengths.data(),
+        newDynamicStrides ? strides.data() : nullptr);
+    }
   }
   
   
@@ -7041,6 +7317,32 @@ namespace dxvk {
         clampedScissors[i].extent = VkExtent2D {
           uint32_t(std::clamp<int32_t>(scissor.offset.x + scissor.extent.width,  clampedScissors[i].offset.x, renderSize.width)  - clampedScissors[i].offset.x),
           uint32_t(std::clamp<int32_t>(scissor.offset.y + scissor.extent.height, clampedScissors[i].offset.y, renderSize.height) - clampedScissors[i].offset.y) };
+      }
+
+      if (winehuaViewportTraceEnabled()) {
+        static std::atomic<uint64_t> traceSequence = { 0 };
+        const uint64_t sequence = traceSequence.fetch_add(1, std::memory_order_relaxed) + 1;
+
+        if (sequence <= 4096 || !(sequence & (sequence - 1))) {
+          for (uint32_t i = 0; i < m_state.vp.viewportCount; i++) {
+            const VkViewport& viewport = m_state.vp.viewports[i];
+            const VkRect2D& scissor = m_state.vp.scissorRects[i];
+            const VkRect2D& clamped = clampedScissors[i];
+
+            Logger::info(str::format(
+              "WineHuaViewportDxvk: seq=", sequence,
+              " fb=", renderSize.width, "x", renderSize.height,
+              " count=", m_state.vp.viewportCount,
+              " index=", i,
+              " viewport=", viewport.x, ",", viewport.y, ",",
+                viewport.width, ",", viewport.height, ",",
+                viewport.minDepth, ",", viewport.maxDepth,
+              " scissor=", scissor.offset.x, ",", scissor.offset.y, ",",
+                scissor.extent.width, ",", scissor.extent.height,
+              " clamped=", clamped.offset.x, ",", clamped.offset.y, ",",
+                clamped.extent.width, ",", clamped.extent.height));
+          }
+        }
       }
 
       m_cmd->cmdSetViewport(m_state.vp.viewportCount, m_state.vp.viewports.data());

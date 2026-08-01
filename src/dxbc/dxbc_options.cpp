@@ -1,4 +1,5 @@
 #include "../d3d11/d3d11_options.h"
+#include "../util/util_env.h"
 
 #include "dxbc_options.h"
 
@@ -40,6 +41,15 @@ namespace dxvk {
     forceSampleRateShading   = options.forceSampleRateShading;
     enableSampleShadingInterlock = device->features().extFragmentShaderInterlock.fragmentShaderSampleInterlock;
     supportsTightIcbPacking  = device->features().vk12.uniformBufferStandardLayout;
+    emulateCustomBorderColor = !devFeatures.extCustomBorderColor
+      .customBorderColorWithoutFormat
+      && env::getEnvVar("WINEHUA_DXVK_DISABLE_CUSTOM_BORDER_EMULATION") != "1";
+
+    Logger::info(str::format(
+      "WineHua: custom border capability path=",
+      emulateCustomBorderColor ? "shader-emulation" : "native",
+      " customBorderColorWithoutFormat=",
+      devFeatures.extCustomBorderColor.customBorderColorWithoutFormat ? 1 : 0));
 
     // Qcom just breaks for no reason if we export point size,
     // even in an environment where doing so is required.

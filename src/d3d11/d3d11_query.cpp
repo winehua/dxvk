@@ -14,7 +14,11 @@ namespace dxvk {
 
     switch (m_desc.Query) {
       case D3D11_QUERY_EVENT:
-        m_event[0] = dxvkDevice->createGpuEvent();
+        // A D3D11 event query represents completion of all commands recorded
+        // before End. Tracking command-list submission completion avoids a
+        // synchronous vkGetEventStatus round-trip and works with remote Vulkan
+        // transports where device events are not feedback-synchronized.
+        m_completionSignal = new sync::Fence(0);
         break;
         
       case D3D11_QUERY_OCCLUSION:
@@ -199,7 +203,8 @@ namespace dxvk {
   void D3D11Query::End(DxvkContext* ctx) {
     switch (m_desc.Query) {
       case D3D11_QUERY_EVENT:
-        ctx->signalGpuEvent(m_event[0]);
+        ctx->signal(m_completionSignal,
+          m_completionValue.load(std::memory_order_acquire));
         break;
       
       case D3D11_QUERY_TIMESTAMP:
@@ -231,6 +236,7 @@ namespace dxvk {
 
     m_state = D3D11_VK_QUERY_ENDED;
     m_resetCtr.fetch_add(1, std::memory_order_acquire);
+    m_completionValue.fetch_add(1, std::memory_order_release);
     return result;
   }
 
@@ -245,12 +251,8 @@ namespace dxvk {
       return S_FALSE;
 
     if (m_desc.Query == D3D11_QUERY_EVENT) {
-      DxvkGpuEventStatus status = m_event[0]->test();
-
-      if (status == DxvkGpuEventStatus::Invalid)
-        return DXGI_ERROR_INVALID_CALL;
-      
-      bool signaled = status == DxvkGpuEventStatus::Signaled;
+      const uint64_t target = m_completionValue.load(std::memory_order_acquire);
+      const bool signaled = m_completionSignal->value() >= target;
 
       if (pData != nullptr)
         *static_cast<BOOL*>(pData) = signaled;

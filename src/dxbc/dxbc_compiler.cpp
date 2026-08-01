@@ -4,6 +4,8 @@ namespace dxvk {
 
   constexpr uint32_t Icb_BindingSlotId   = 14;
   constexpr uint32_t Icb_MaxBakedDwords  = 64;
+  constexpr uint32_t SamplerEmulationBindingSlotId = 15;
+  constexpr uint32_t SamplerEmulationVectorCount   = 32;
   
   DxbcCompiler::DxbcCompiler(
     const std::string&        fileName,
@@ -879,6 +881,15 @@ namespace dxvk {
     // dclSampler takes one operand:
     //    (dst0) The sampler register to declare
     const uint32_t samplerId = ins.dst[0].idx[0].offset;
+
+    if (m_moduleInfo.options.emulateCustomBorderColor
+     && !m_constantBuffers.at(SamplerEmulationBindingSlotId).varId) {
+      this->emitDclConstantBufferVar(
+        SamplerEmulationBindingSlotId,
+        SamplerEmulationVectorCount,
+        4u,
+        "winehua_sampler_info");
+    }
     
     // The sampler type is opaque, but we still have to
     // define a pointer and a variable in oder to use it
@@ -4157,6 +4168,20 @@ namespace dxvk {
       ? emitExtractSparseTexel(texelTypeId, resultId)
       : resultId;
 
+    if (m_moduleInfo.options.emulateCustomBorderColor
+     && ins.op == DxbcOpcode::SampleL
+     && !isDepthCompare
+     && texture.sampledType == DxbcScalarType::Float32
+     && !texture.imageInfo.array
+     && texture.imageInfo.dim != spv::DimCube
+     && ins.sampleControls.u == 0
+     && ins.sampleControls.v == 0
+     && ins.sampleControls.w == 0) {
+      result = emitCustomBorderColorCorrection(
+        result, coord, textureReg, texture,
+        samplerReg.idx[0].offset, lod);
+    }
+
     // Swizzle components using the texture swizzle
     // and the destination operand's write mask
     if (result.type.ccount != 1) {
@@ -5249,6 +5274,140 @@ namespace dxvk {
     return m_module.opSampledImage(sampledImageType,
       m_module.opLoad(textureResource.imageTypeId, textureResource.varId),
       m_module.opLoad(samplerResource.typeId,      samplerResource.varId));
+  }
+
+
+  DxbcRegisterValue DxbcCompiler::emitLoadSamplerEmulationData(
+          uint32_t samplerId,
+          uint32_t vectorId) {
+    const DxbcVectorType vecType = { DxbcScalarType::Float32, 4 };
+    const std::array<uint32_t, 2> indices = {{
+      m_module.constu32(0),
+      m_module.constu32(2 * samplerId + vectorId),
+    }};
+
+    const uint32_t ptrTypeId = m_module.defPointerType(
+      getVectorTypeId(vecType), spv::StorageClassUniform);
+    const uint32_t ptrId = m_module.opAccessChain(
+      ptrTypeId,
+      m_constantBuffers.at(SamplerEmulationBindingSlotId).varId,
+      indices.size(), indices.data());
+
+    DxbcRegisterValue result;
+    result.type = vecType;
+    result.id = m_module.opLoad(getVectorTypeId(vecType), ptrId);
+    return result;
+  }
+
+
+  DxbcRegisterValue DxbcCompiler::emitCustomBorderColorCorrection(
+          DxbcRegisterValue       value,
+          DxbcRegisterValue       coord,
+    const DxbcRegister&           textureReg,
+    const DxbcShaderResource&     texture,
+          uint32_t                samplerId,
+          DxbcRegisterValue       lod) {
+    const uint32_t dim = getTexLayerDim(texture.imageInfo);
+    const uint32_t floatType = getScalarTypeId(DxbcScalarType::Float32);
+    const uint32_t boolType  = m_module.defBoolType();
+    const uint32_t zero      = m_module.constf32(0.0f);
+    const uint32_t half      = m_module.constf32(0.5f);
+    const uint32_t one       = m_module.constf32(1.0f);
+
+    DxbcRegisterValue mipLevel;
+    mipLevel.type = { DxbcScalarType::Uint32, 1 };
+    mipLevel.id = m_module.constu32(0);
+
+    DxbcRegisterValue size = emitQueryTextureSize(textureReg, mipLevel);
+    DxbcRegisterValue border = emitLoadSamplerEmulationData(samplerId, 0);
+    DxbcRegisterValue metadata = emitLoadSamplerEmulationData(samplerId, 1);
+
+    uint32_t pointInsideWeight = one;
+    uint32_t linearInsideWeight = one;
+
+    for (uint32_t i = 0; i < dim; i++) {
+      const uint32_t coordValue = coord.type.ccount == 1
+        ? coord.id
+        : m_module.opCompositeExtract(floatType, coord.id, 1, &i);
+      const uint32_t sizeUint = size.type.ccount == 1
+        ? size.id
+        : m_module.opCompositeExtract(
+            getScalarTypeId(DxbcScalarType::Uint32), size.id, 1, &i);
+      const uint32_t sizeValue = m_module.opConvertUtoF(floatType, sizeUint);
+      const uint32_t axisIndex = i + 1;
+      const uint32_t axisMask = m_module.opCompositeExtract(
+        floatType, metadata.id, 1, &axisIndex);
+
+      const uint32_t pointPos = m_module.opFloor(
+        floatType, m_module.opFMul(floatType, coordValue, sizeValue));
+      const uint32_t pointGeZero = m_module.opFOrdGreaterThanEqual(
+        boolType, pointPos, zero);
+      const uint32_t pointLtSize = m_module.opFOrdLessThan(
+        boolType, pointPos, sizeValue);
+      const uint32_t pointInside = m_module.opLogicalAnd(
+        boolType, pointGeZero, pointLtSize);
+      const uint32_t pointAxisWeight = m_module.opSelect(
+        floatType, pointInside, one, zero);
+
+      const uint32_t linearPos = m_module.opFSub(floatType,
+        m_module.opFMul(floatType, coordValue, sizeValue), half);
+      const uint32_t linearBase = m_module.opFloor(floatType, linearPos);
+      const uint32_t linearFrac = m_module.opFSub(
+        floatType, linearPos, linearBase);
+      const uint32_t linearNext = m_module.opFAdd(
+        floatType, linearBase, one);
+
+      const uint32_t baseInside = m_module.opLogicalAnd(boolType,
+        m_module.opFOrdGreaterThanEqual(boolType, linearBase, zero),
+        m_module.opFOrdLessThan(boolType, linearBase, sizeValue));
+      const uint32_t nextInside = m_module.opLogicalAnd(boolType,
+        m_module.opFOrdGreaterThanEqual(boolType, linearNext, zero),
+        m_module.opFOrdLessThan(boolType, linearNext, sizeValue));
+      const uint32_t baseWeight = m_module.opSelect(floatType,
+        baseInside, m_module.opFSub(floatType, one, linearFrac), zero);
+      const uint32_t nextWeight = m_module.opSelect(
+        floatType, nextInside, linearFrac, zero);
+      const uint32_t linearAxisWeight = m_module.opFAdd(
+        floatType, baseWeight, nextWeight);
+
+      const uint32_t maskedPointWeight = m_module.opFSub(floatType, one,
+        m_module.opFMul(floatType, axisMask,
+          m_module.opFSub(floatType, one, pointAxisWeight)));
+      const uint32_t maskedLinearWeight = m_module.opFSub(floatType, one,
+        m_module.opFMul(floatType, axisMask,
+          m_module.opFSub(floatType, one, linearAxisWeight)));
+
+      pointInsideWeight = m_module.opFMul(
+        floatType, pointInsideWeight, maskedPointWeight);
+      linearInsideWeight = m_module.opFMul(
+        floatType, linearInsideWeight, maskedLinearWeight);
+    }
+
+    const uint32_t modeIndex = 0;
+    const uint32_t mode = m_module.opCompositeExtract(
+      floatType, metadata.id, 1, &modeIndex);
+    const uint32_t pointMode = m_module.opFOrdEqual(
+      boolType, mode, m_module.constf32(1.0f));
+    const uint32_t linearMode = m_module.opFOrdEqual(
+      boolType, mode, m_module.constf32(2.0f));
+
+    const uint32_t outsidePoint = m_module.opFSub(
+      floatType, one, pointInsideWeight);
+    const uint32_t outsideLinear = m_module.opFSub(
+      floatType, one, linearInsideWeight);
+    uint32_t outsideWeight = m_module.opSelect(floatType, pointMode,
+      outsidePoint,
+      m_module.opSelect(floatType, linearMode, outsideLinear, zero));
+
+    const uint32_t lodIsZero = m_module.opFOrdEqual(boolType, lod.id, zero);
+    outsideWeight = m_module.opSelect(
+      floatType, lodIsZero, outsideWeight, zero);
+
+    value.id = m_module.opFAdd(
+      getVectorTypeId(value.type), value.id,
+      m_module.opVectorTimesScalar(
+        getVectorTypeId(value.type), border.id, outsideWeight));
+    return value;
   }
   
   
