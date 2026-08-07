@@ -157,6 +157,24 @@ IDXGIVkSwapChainFactory : public IUnknown {
 
 
 /**
+ * \brief Legacy Wine DXGI presenter factory
+ *
+ * Used by vkd3d-proton versions before 2.8. Newer implementations use
+ * IDXGIVkSwapChainFactory above.
+ */
+MIDL_INTERFACE("53cb4ff0-c25a-4164-a891-0e83db0a7aac")
+IWineDXGISwapChainFactory : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE CreateSwapChainForHwnd(
+          IDXGIFactory*            pFactory,
+          HWND                     hWnd,
+    const DXGI_SWAP_CHAIN_DESC1*   pDesc,
+    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
+          IDXGIOutput*             pRestrictToOutput,
+          IDXGISwapChain1**        ppSwapChain) = 0;
+};
+
+
+/**
  * \brief Private DXGI adapter interface
  * 
  * The implementation of \c IDXGIAdapter holds a
@@ -480,4 +498,5 @@ __CRT_UUID_DECL(IDXGIVkSwapChain,          0xe4a9059e,0xb569,0x46ab,0x8d,0xe7,0x
 __CRT_UUID_DECL(IDXGIVkSwapChain1,         0x785326d4,0xb77b,0x4826,0xae,0x70,0x8d,0x08,0x30,0x8e,0xe6,0xd1);
 __CRT_UUID_DECL(IDXGIVkSwapChain2,         0xaed91093,0xe02e,0x458c,0xbd,0xef,0xa9,0x7d,0xa1,0xa7,0xe6,0xd2);
 __CRT_UUID_DECL(IDXGIVkSwapChainFactory,   0xe7d6c3ca,0x23a0,0x4e08,0x9f,0x2f,0xea,0x52,0x31,0xdf,0x66,0x33);
+__CRT_UUID_DECL(IWineDXGISwapChainFactory, 0x53cb4ff0,0xc25a,0x4164,0xa8,0x91,0x0e,0x83,0xdb,0x0a,0x7a,0xac);
 #endif
