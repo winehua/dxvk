@@ -7467,7 +7467,9 @@ namespace dxvk {
     // Maleoon exposes alpha-to-coverage for single-sample pipelines but does
     // not remove fully transparent fragments. Preserve the narrow D3D
     // compatibility guarantee here without approximating multisample
-    // coverage for partially transparent texels.
+    // coverage for partially transparent texels. Keeping non-zero alpha is
+    // important for this sample's fine leaf and grass edges; a fixed 0.5
+    // alpha-test removes most of those valid texels.
     if (m_oRegs[0].id != 0
      && m_oRegs[0].type.ctype == DxbcScalarType::Float32
      && m_oRegs[0].type.ccount >= 4) {
