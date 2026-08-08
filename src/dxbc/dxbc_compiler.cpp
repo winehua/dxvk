@@ -7463,6 +7463,42 @@ namespace dxvk {
       
       m_module.opLabel(cond.labelEnd);
     }
+
+    // Maleoon exposes alpha-to-coverage for single-sample pipelines but does
+    // not remove fully transparent fragments. Preserve the narrow D3D
+    // compatibility guarantee here without approximating multisample
+    // coverage for partially transparent texels.
+    if (m_oRegs[0].id != 0
+     && m_oRegs[0].type.ctype == DxbcScalarType::Float32
+     && m_oRegs[0].type.ccount >= 4) {
+      const uint32_t enabled = emitNewSpecConstant(
+        DxvkSpecConstantId::AlphaToCoverageSingleSample,
+        DxbcScalarType::Uint32, 0,
+        "AlphaToCoverageSingleSample");
+      const DxbcRegisterValue color = emitValueLoad(m_oRegs[0]);
+      const uint32_t alphaComponent = 3;
+      const uint32_t alpha = m_module.opCompositeExtract(
+        getScalarTypeId(DxbcScalarType::Float32), color.id,
+        1, &alphaComponent);
+      const uint32_t fallbackEnabled = m_module.opINotEqual(
+        m_module.defBoolType(), enabled, m_module.constu32(0));
+      const uint32_t transparent = m_module.opFOrdLessThanEqual(
+        m_module.defBoolType(), alpha, m_module.constf32(0.0f));
+      const uint32_t discard = m_module.opLogicalAnd(
+        m_module.defBoolType(), fallbackEnabled, transparent);
+
+      DxbcConditional cond;
+      cond.labelIf = m_module.allocateId();
+      cond.labelEnd = m_module.allocateId();
+
+      m_module.opSelectionMerge(cond.labelEnd, spv::SelectionControlMaskNone);
+      m_module.opBranchConditional(discard, cond.labelIf, cond.labelEnd);
+
+      m_module.opLabel(cond.labelIf);
+      m_module.opKill();
+
+      m_module.opLabel(cond.labelEnd);
+    }
     
     this->emitOutputSetup();
     this->emitOutputMapping();

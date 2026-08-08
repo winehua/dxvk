@@ -26,6 +26,17 @@ namespace dxvk {
    * name is added to the automatic policy.
    */
   bool dxvkWineHuaFreezeBoolSpec(const DxvkDevice* device);
+
+  /**
+   * \brief Selects the single-sample alpha-to-coverage workaround
+   *
+   * Some Maleoon Vulkan drivers accept alpha-to-coverage with one raster
+   * sample but leave the coverage mask unchanged. D3D applications commonly
+   * rely on fully transparent texels producing no coverage even in this
+   * configuration. The environment override keeps the workaround reversible
+   * while the automatic policy remains scoped to the affected adapter.
+   */
+  bool dxvkWineHuaEmulateSingleSampleA2C(const DxvkDevice* device);
   
   /**
    * \brief Built-in specialization constants
@@ -43,6 +54,7 @@ namespace dxvk {
     // Specialization constants for pipeline state
     SpecConstantRangeStart      = ColorComponentMappings + MaxNumRenderTargets,
     RasterizerSampleCount       = SpecConstantRangeStart + 0,
+    AlphaToCoverageSingleSample = SpecConstantRangeStart + 1,
     FirstPipelineConstant
   };
 

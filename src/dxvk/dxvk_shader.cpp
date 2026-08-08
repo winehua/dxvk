@@ -3,6 +3,7 @@
 #include "dxvk_device.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -36,6 +37,38 @@ namespace dxvk {
      * retain native specialization constants unless explicitly quirked. */
     return std::strstr(deviceName, "Venus") != nullptr ||
            std::strstr(deviceName, "Maleoon") != nullptr;
+  }
+
+  bool dxvkWineHuaEmulateSingleSampleA2C(const DxvkDevice* device) {
+    const std::string override =
+      env::getEnvVar("DXVK_WINEHUA_SINGLE_SAMPLE_A2C");
+    bool enabled = false;
+
+    if (override == "1" || override == "true") {
+      enabled = true;
+    } else if (override == "0" || override == "false") {
+      enabled = false;
+    } else {
+      const std::string quirks = env::getEnvVar("WINEHUA_DXVK_QUIRKS");
+      if (quirks.find("maleoon-single-sample-a2c") != std::string::npos) {
+        enabled = true;
+      } else if (quirks.find("no-maleoon-single-sample-a2c") != std::string::npos) {
+        enabled = false;
+      } else if (device && device->adapter() != nullptr) {
+        const char* deviceName = device->adapter()->deviceProperties().deviceName;
+        enabled = std::strstr(deviceName, "Maleoon") != nullptr;
+      }
+    }
+
+    if (enabled) {
+      static std::atomic<bool> logged { false };
+      if (!logged.exchange(true, std::memory_order_relaxed)) {
+        Logger::info(
+          "WineHua: single-sample alpha-to-coverage transparent-texel fallback enabled");
+      }
+    }
+
+    return enabled;
   }
 
   static bool freezeBoolSpecConstants(

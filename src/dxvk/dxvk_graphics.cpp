@@ -176,6 +176,11 @@ namespace dxvk {
     // Set up some specialization constants
     DxvkSpecConstants specData;
     specData.set(uint32_t(DxvkSpecConstantId::RasterizerSampleCount), sampleCount, VK_SAMPLE_COUNT_1_BIT);
+    specData.set(uint32_t(DxvkSpecConstantId::AlphaToCoverageSingleSample),
+      sampleCount == VK_SAMPLE_COUNT_1_BIT
+        && state.ms.enableAlphaToCoverage()
+        && dxvkWineHuaEmulateSingleSampleA2C(m_pipeMgr->m_device),
+      false);
     
     for (uint32_t i = 0; i < m_layout->bindingCount(); i++)
       specData.set(i, state.bsBindingMask.test(i), true);
