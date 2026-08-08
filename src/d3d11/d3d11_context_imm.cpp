@@ -771,12 +771,19 @@ namespace dxvk {
           ctx->flushMappedImage(cImage, cOffset, cLength);
         });
       } else {
-        EmitCs([
-          cBuffer = pResource->GetMappedBuffer(Subresource),
-          cSlice  = pResource->GetMappedSlice(Subresource)
-        ] (DxvkContext* ctx) {
-          ctx->flushMappedBuffer(cBuffer, cSlice);
-        });
+        auto mappedBuffer = pResource->GetMappedBuffer(Subresource);
+        auto mappedSlice = pResource->GetMappedSlice(Subresource);
+
+        if (pResource->GetMapMode() == D3D11_COMMON_TEXTURE_MAP_MODE_STAGING) {
+          mappedBuffer->flushMappedSlice(mappedSlice);
+        } else {
+          EmitCs([
+            cBuffer = std::move(mappedBuffer),
+            cSlice  = mappedSlice
+          ] (DxvkContext* ctx) {
+            ctx->flushMappedBuffer(cBuffer, cSlice);
+          });
+        }
       }
     }
 

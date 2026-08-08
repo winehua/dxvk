@@ -223,9 +223,13 @@ namespace dxvk {
             util::packImageData(mappedBuffer->mapPtr(0),
               pInitialData[id].pSysMem, pInitialData[id].SysMemPitch, pInitialData[id].SysMemSlicePitch,
               0, 0, pTexture->GetVkImageType(), mipLevelExtent, 1, formatInfo, formatInfo->aspectMask);
-            if (winehuaFlushDynamicMapped())
-              m_context->flushMappedBuffer(
-                mappedBuffer, mappedBuffer->getSliceHandle());
+            if (winehuaFlushDynamicMapped()) {
+              if (mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_STAGING)
+                mappedBuffer->flushMappedSlice(mappedBuffer->getSliceHandle());
+              else
+                m_context->flushMappedBuffer(
+                  mappedBuffer, mappedBuffer->getSliceHandle());
+            }
           }
         }
       }
@@ -250,8 +254,12 @@ namespace dxvk {
         for (uint32_t i = 0; i < pTexture->CountSubresources(); i++) {
           auto buffer = pTexture->GetMappedBuffer(i);
           std::memset(buffer->mapPtr(0), 0, buffer->info().size);
-          if (winehuaFlushDynamicMapped())
-            m_context->flushMappedBuffer(buffer, buffer->getSliceHandle());
+          if (winehuaFlushDynamicMapped()) {
+            if (mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_STAGING)
+              buffer->flushMappedSlice(buffer->getSliceHandle());
+            else
+              m_context->flushMappedBuffer(buffer, buffer->getSliceHandle());
+          }
         }
       }
     }
