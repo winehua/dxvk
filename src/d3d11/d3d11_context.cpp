@@ -1235,6 +1235,203 @@ namespace dxvk {
         BaseVertexLocation, 0);
     });
   }
+
+
+  bool D3D11DeviceContext::TryEmitInstanceDivisorDraw(
+          bool            Indexed,
+          UINT            ElementCount,
+          UINT            InstanceCount,
+          UINT            StartElementLocation,
+          INT             BaseVertexLocation,
+          UINT            StartInstanceLocation) {
+    if (InstanceCount == 0
+     || GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE
+     || m_state.ia.inputLayout == nullptr
+     || m_device->features().extVertexAttributeDivisor.vertexAttributeInstanceRateDivisor)
+      return false;
+
+    const auto& layoutBindings = m_state.ia.inputLayout->GetBindings();
+    bool needsEmulation = false;
+
+    for (const auto& binding : layoutBindings) {
+      needsEmulation |= binding.inputRate == VK_VERTEX_INPUT_RATE_INSTANCE
+                     && binding.fetchRate > 1;
+    }
+
+    if (!needsEmulation)
+      return false;
+
+    struct EmulatedBinding {
+      uint32_t        slot;
+      uint32_t        stride;
+      uint32_t        divisor;
+      DxvkBufferSlice source;
+      Rc<DxvkBuffer>  expanded;
+    };
+
+    std::vector<EmulatedBinding> emulatedBindings;
+    const uint64_t endInstance = uint64_t(StartInstanceLocation) + InstanceCount;
+    constexpr VkDeviceSize MaxExpandedBytes = 256ull << 20;
+
+    for (const auto& layoutBinding : layoutBindings) {
+      if (layoutBinding.inputRate != VK_VERTEX_INPUT_RATE_INSTANCE
+       || layoutBinding.fetchRate <= 1)
+        continue;
+
+      const uint32_t slot = layoutBinding.binding;
+
+      if (slot >= m_state.ia.vertexBuffers.size())
+        return false;
+
+      const auto& vertexBinding = m_state.ia.vertexBuffers[slot];
+      D3D11Buffer* sourceBuffer = vertexBinding.buffer.ptr();
+      const uint32_t stride = vertexBinding.stride;
+      const uint32_t divisor = layoutBinding.fetchRate;
+
+      if (sourceBuffer == nullptr
+       || stride == 0
+       || sourceBuffer->GetMapMode() != D3D11_COMMON_BUFFER_MAP_MODE_DIRECT) {
+        if (!m_instanceDivisorFailureLogged) {
+          Logger::warn("D3D11: Cannot emulate an instance divisor for a non-mappable vertex buffer");
+          m_instanceDivisorFailureLogged = true;
+        }
+        return false;
+      }
+
+      const uint64_t sourceRecords = (endInstance + divisor - 1) / divisor;
+      const uint64_t sourceEnd = uint64_t(vertexBinding.offset) + sourceRecords * stride;
+      const uint64_t expandedBytes = endInstance * stride;
+
+      if (sourceEnd > sourceBuffer->Desc()->ByteWidth
+       || expandedBytes == 0
+       || expandedBytes > MaxExpandedBytes) {
+        if (!m_instanceDivisorFailureLogged) {
+          Logger::warn(str::format(
+            "D3D11: Cannot emulate instance divisor ", divisor,
+            " for binding ", slot,
+            " (source bytes ", sourceEnd,
+            ", expanded bytes ", expandedBytes, ")"));
+          m_instanceDivisorFailureLogged = true;
+        }
+        return false;
+      }
+
+      const auto sourceSlice = sourceBuffer->GetMappedSlice();
+      const auto* sourceData = reinterpret_cast<const char*>(sourceSlice.mapPtr)
+                             + vertexBinding.offset;
+      const auto sourceHash = Sha1Hash::compute(
+        sourceData, size_t(sourceRecords * stride));
+      auto& cache = m_instanceDivisorCache[slot];
+
+      const bool cacheHit = cache.valid
+                         && cache.sourceBuffer.ptr() == sourceBuffer
+                         && cache.sourceSlice.eq(sourceSlice)
+                         && cache.sourceOffset == vertexBinding.offset
+                         && cache.sourceStride == stride
+                         && cache.divisor == divisor
+                         && cache.startInstance == StartInstanceLocation
+                         && cache.instanceCount == InstanceCount
+                         && cache.sourceHash == sourceHash;
+
+      Rc<DxvkBuffer> expandedBuffer;
+
+      if (cacheHit) {
+        expandedBuffer = cache.expandedBuffer;
+      } else {
+        DxvkBufferCreateInfo bufferInfo;
+        bufferInfo.size   = expandedBytes;
+        bufferInfo.usage  = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.stages = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+        bufferInfo.access = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+
+        expandedBuffer = m_device->createBuffer(
+          bufferInfo,
+          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        auto expandedSlice = expandedBuffer->getSliceHandle();
+        auto* expandedData = reinterpret_cast<char*>(expandedSlice.mapPtr);
+
+        for (uint64_t instance = StartInstanceLocation; instance < endInstance; instance++) {
+          const uint64_t sourceInstance = instance / divisor;
+          std::memcpy(
+            expandedData + instance * stride,
+            sourceData + sourceInstance * stride,
+            stride);
+        }
+
+        if (expandedBuffer->flushMappedSlice(expandedSlice) != VK_SUCCESS) {
+          if (!m_instanceDivisorFailureLogged) {
+            Logger::warn("D3D11: Failed to publish an emulated instance-divisor buffer");
+            m_instanceDivisorFailureLogged = true;
+          }
+          return false;
+        }
+
+        cache.sourceBuffer  = sourceBuffer;
+        cache.sourceSlice   = sourceSlice;
+        cache.sourceOffset  = vertexBinding.offset;
+        cache.sourceStride  = stride;
+        cache.divisor       = divisor;
+        cache.startInstance = StartInstanceLocation;
+        cache.instanceCount = InstanceCount;
+        cache.sourceHash    = sourceHash;
+        cache.expandedBuffer = expandedBuffer;
+        cache.valid         = true;
+      }
+
+      emulatedBindings.push_back({
+        slot,
+        stride,
+        divisor,
+        sourceBuffer->GetBufferSlice(vertexBinding.offset),
+        std::move(expandedBuffer),
+      });
+    }
+
+    if (emulatedBindings.empty())
+      return false;
+
+    if (!m_instanceDivisorEmulationLogged) {
+      Logger::info(str::format(
+        "D3D11: Emulating unsupported vertex attribute divisor for ",
+        emulatedBindings.size(), " binding(s)"));
+      m_instanceDivisorEmulationLogged = true;
+    }
+
+    EmitCs([
+      cBindings             = std::move(emulatedBindings),
+      cIndexed              = Indexed,
+      cElementCount         = ElementCount,
+      cInstanceCount        = InstanceCount,
+      cStartElementLocation = StartElementLocation,
+      cBaseVertexLocation   = BaseVertexLocation,
+      cStartInstance        = StartInstanceLocation
+    ] (DxvkContext* ctx) {
+      for (const auto& binding : cBindings)
+        ctx->bindVertexBuffer(binding.slot, DxvkBufferSlice(binding.expanded), binding.stride);
+
+      if (cIndexed) {
+        ctx->drawIndexed(
+          cElementCount,
+          cInstanceCount,
+          cStartElementLocation,
+          cBaseVertexLocation,
+          cStartInstance);
+      } else {
+        ctx->draw(
+          cElementCount,
+          cInstanceCount,
+          cStartElementLocation,
+          cStartInstance);
+      }
+
+      for (const auto& binding : cBindings)
+        ctx->bindVertexBuffer(binding.slot, binding.source, binding.stride);
+    });
+
+    return true;
+  }
   
   
   void STDMETHODCALLTYPE D3D11DeviceContext::DrawInstanced(
@@ -1243,6 +1440,15 @@ namespace dxvk {
           UINT            StartVertexLocation,
           UINT            StartInstanceLocation) {
     D3D10DeviceLock lock = LockContext();
+
+    if (TryEmitInstanceDivisorDraw(
+          false,
+          VertexCountPerInstance,
+          InstanceCount,
+          StartVertexLocation,
+          0,
+          StartInstanceLocation))
+      return;
     
     EmitCs([=] (DxvkContext* ctx) {
       ctx->draw(
@@ -1261,6 +1467,15 @@ namespace dxvk {
           INT             BaseVertexLocation,
           UINT            StartInstanceLocation) {
     D3D10DeviceLock lock = LockContext();
+
+    if (TryEmitInstanceDivisorDraw(
+          true,
+          IndexCountPerInstance,
+          InstanceCount,
+          StartIndexLocation,
+          BaseVertexLocation,
+          StartInstanceLocation))
+      return;
     
     EmitCs([=] (DxvkContext* ctx) {
       ctx->drawIndexed(
