@@ -71,6 +71,26 @@ namespace dxvk {
     return enabled;
   }
 
+  float dxvkWineHuaSingleSampleA2CEpsilon(const DxvkDevice* device) {
+    if (!dxvkWineHuaEmulateSingleSampleA2C(device))
+      return 0.0f;
+
+    static const float epsilon = [] {
+      const std::string value =
+        env::getEnvVar("DXVK_WINEHUA_SINGLE_SAMPLE_A2C_EPSILON");
+      if (value.empty())
+        return 0.0f;
+
+      char* end = nullptr;
+      const float parsed = std::strtof(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || parsed < 0.0f || parsed > 0.25f)
+        return 0.0f;
+      return parsed;
+    }();
+
+    return epsilon;
+  }
+
   static bool freezeBoolSpecConstants(
           SpirvCodeBuffer&       codeBuffer,
           const DxvkBindingMask* bindingMask,

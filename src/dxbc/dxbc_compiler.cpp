@@ -7477,6 +7477,10 @@ namespace dxvk {
         DxvkSpecConstantId::AlphaToCoverageSingleSample,
         DxbcScalarType::Uint32, 0,
         "AlphaToCoverageSingleSample");
+      const uint32_t epsilon = emitNewSpecConstant(
+        DxvkSpecConstantId::AlphaToCoverageSingleSampleEpsilon,
+        DxbcScalarType::Float32, 0,
+        "AlphaToCoverageSingleSampleEpsilon");
       const DxbcRegisterValue color = emitValueLoad(m_oRegs[0]);
       const uint32_t alphaComponent = 3;
       const uint32_t alpha = m_module.opCompositeExtract(
@@ -7485,7 +7489,7 @@ namespace dxvk {
       const uint32_t fallbackEnabled = m_module.opINotEqual(
         m_module.defBoolType(), enabled, m_module.constu32(0));
       const uint32_t transparent = m_module.opFOrdLessThanEqual(
-        m_module.defBoolType(), alpha, m_module.constf32(0.0f));
+        m_module.defBoolType(), alpha, epsilon);
       const uint32_t discard = m_module.opLogicalAnd(
         m_module.defBoolType(), fallbackEnabled, transparent);
 

@@ -719,6 +719,23 @@ namespace dxvk {
       }
     }
 
+    const auto traceSubresource = pResource->GetSubresourceFromIndex(
+      formatInfo->aspectMask, Subresource);
+    const auto traceExtent = pResource->MipLevelExtent(traceSubresource.mipLevel);
+    const bool traceAlpha = MapType == D3D11_MAP_READ
+      && traceSubresource.mipLevel == 0
+      && formatInfo->elementSize == 4
+      && !formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
+      && !formatInfo->flags.test(DxvkFormatFlag::MultiPlane);
+    const auto traceLayout = pResource->GetSubresourceLayout(
+      formatInfo->aspectMask, Subresource);
+    auto* tracePtr = reinterpret_cast<char*>(mapPtr) + traceLayout.Offset;
+
+    if (traceAlpha)
+      winehuaTraceRgbaAlpha("map-before-invalidate", tracePtr,
+        traceExtent.width, traceExtent.height, traceLayout.RowPitch,
+        uint32_t(packedFormat), Subresource, traceSubresource.arrayLayer);
+
     if (winehuaPreciseShadowEnabled()
      && (MapType == D3D11_MAP_READ || MapType == D3D11_MAP_READ_WRITE)) {
       const auto layout = pResource->GetSubresourceLayout(
@@ -729,6 +746,11 @@ namespace dxvk {
       if (result != VK_SUCCESS)
         return E_FAIL;
     }
+
+    if (traceAlpha)
+      winehuaTraceRgbaAlpha("map-after-invalidate", tracePtr,
+        traceExtent.width, traceExtent.height, traceLayout.RowPitch,
+        uint32_t(packedFormat), Subresource, traceSubresource.arrayLayer);
 
     // Mark the given subresource as mapped
     pResource->SetMapType(Subresource, MapType);

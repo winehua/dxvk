@@ -162,6 +162,15 @@ namespace dxvk {
           VkOffset3D mipLevelOffset = { 0, 0, 0 };
           VkExtent3D mipLevelExtent = pTexture->MipLevelExtent(level);
 
+          if (level == 0 && formatInfo->elementSize == 4
+           && !formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
+           && !formatInfo->flags.test(DxvkFormatFlag::MultiPlane)) {
+            winehuaTraceRgbaAlpha("init-src",
+              pInitialData[id].pSysMem,
+              mipLevelExtent.width, mipLevelExtent.height,
+              pInitialData[id].SysMemPitch, uint32_t(packedFormat), id, layer);
+          }
+
           if (mapMode != D3D11_COMMON_TEXTURE_MAP_MODE_STAGING) {
             const void* uploadData = pInitialData[id].pSysMem;
             VkDeviceSize uploadRowPitch = pInitialData[id].SysMemPitch;
@@ -223,6 +232,15 @@ namespace dxvk {
             util::packImageData(mappedBuffer->mapPtr(0),
               pInitialData[id].pSysMem, pInitialData[id].SysMemPitch, pInitialData[id].SysMemSlicePitch,
               0, 0, pTexture->GetVkImageType(), mipLevelExtent, 1, formatInfo, formatInfo->aspectMask);
+            if (level == 0 && formatInfo->elementSize == 4
+             && !formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
+             && !formatInfo->flags.test(DxvkFormatFlag::MultiPlane)) {
+              winehuaTraceRgbaAlpha("init-packed",
+                mappedBuffer->mapPtr(0),
+                mipLevelExtent.width, mipLevelExtent.height,
+                uint64_t(mipLevelExtent.width) * formatInfo->elementSize,
+                uint32_t(packedFormat), id, layer);
+            }
             if (winehuaFlushDynamicMapped()) {
               if (mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_STAGING)
                 mappedBuffer->flushMappedSlice(mappedBuffer->getSliceHandle());

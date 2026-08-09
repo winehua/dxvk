@@ -37,6 +37,16 @@ namespace dxvk {
    * while the automatic policy remains scoped to the affected adapter.
    */
   bool dxvkWineHuaEmulateSingleSampleA2C(const DxvkDevice* device);
+
+  /**
+   * \brief Returns an optional low-alpha discard threshold for single-sample A2C
+   *
+   * The default is zero, preserving every non-zero alpha value. A tiny
+   * threshold can be enabled for drivers that leave quantization noise in
+   * nominally transparent texels. The value is supplied through
+   * DXVK_WINEHUA_SINGLE_SAMPLE_A2C_EPSILON and is clamped by the runtime.
+   */
+  float dxvkWineHuaSingleSampleA2CEpsilon(const DxvkDevice* device);
   
   /**
    * \brief Built-in specialization constants
@@ -54,8 +64,14 @@ namespace dxvk {
     // Specialization constants for pipeline state
     SpecConstantRangeStart      = ColorComponentMappings + MaxNumRenderTargets,
     RasterizerSampleCount       = SpecConstantRangeStart + 0,
-    AlphaToCoverageSingleSample = SpecConstantRangeStart + 1,
-    FirstPipelineConstant
+    /* Keep FirstPipelineConstant at its upstream value.  The built-in
+     * present/HUD shaders use this ID for their first user specialization
+     * constant (1225 on the legacy branch).  WineHua compatibility constants
+     * must live after the complete user specialization range, otherwise those
+     * shaders silently receive the A2C flag instead of their intended value. */
+    FirstPipelineConstant,
+    AlphaToCoverageSingleSample = FirstPipelineConstant + MaxNumSpecConstants,
+    AlphaToCoverageSingleSampleEpsilon = AlphaToCoverageSingleSample + 1
   };
 
   /**

@@ -8,6 +8,7 @@
 #include "dxvk_winehua_trace.h"
 
 #include <cstdlib>
+#include <cstring>
 
 namespace dxvk {
 
@@ -176,11 +177,18 @@ namespace dxvk {
     // Set up some specialization constants
     DxvkSpecConstants specData;
     specData.set(uint32_t(DxvkSpecConstantId::RasterizerSampleCount), sampleCount, VK_SAMPLE_COUNT_1_BIT);
+    const bool emulateSingleSampleA2C = sampleCount == VK_SAMPLE_COUNT_1_BIT
+      && state.ms.enableAlphaToCoverage()
+      && dxvkWineHuaEmulateSingleSampleA2C(m_pipeMgr->m_device);
     specData.set(uint32_t(DxvkSpecConstantId::AlphaToCoverageSingleSample),
-      sampleCount == VK_SAMPLE_COUNT_1_BIT
-        && state.ms.enableAlphaToCoverage()
-        && dxvkWineHuaEmulateSingleSampleA2C(m_pipeMgr->m_device),
-      false);
+      emulateSingleSampleA2C, false);
+
+    float epsilon = emulateSingleSampleA2C
+      ? dxvkWineHuaSingleSampleA2CEpsilon(m_pipeMgr->m_device) : 0.0f;
+    uint32_t epsilonBits = 0;
+    std::memcpy(&epsilonBits, &epsilon, sizeof(epsilonBits));
+    specData.set(uint32_t(DxvkSpecConstantId::AlphaToCoverageSingleSampleEpsilon),
+      epsilonBits, 0u);
     
     for (uint32_t i = 0; i < m_layout->bindingCount(); i++)
       specData.set(i, state.bsBindingMask.test(i), true);

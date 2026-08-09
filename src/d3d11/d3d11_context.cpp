@@ -4051,6 +4051,14 @@ namespace dxvk {
     const bool bcEmulated = formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
                          && !pDstTexture->GetImage()->formatInfo()->flags.test(DxvkFormatFlag::BlockCompressed);
     const bool snormRtEmulated = pDstTexture->IsRgba8SnormRtEmulated();
+    const bool traceAlpha = subresource.mipLevel == 0
+      && formatInfo->elementSize == 4
+      && !formatInfo->flags.test(DxvkFormatFlag::BlockCompressed)
+      && !formatInfo->flags.test(DxvkFormatFlag::MultiPlane);
+    if (traceAlpha)
+      winehuaTraceRgbaAlpha("update-src", pSrcData,
+        extent.width, extent.height, SrcRowPitch,
+        uint32_t(packedFormat), DstSubresource, subresource.arrayLayer);
     if (snormRtEmulated || bcEmulated) {
       D3D11CpuImage converted;
       const bool convertedOk = snormRtEmulated
@@ -4078,6 +4086,12 @@ namespace dxvk {
       pSrcData, SrcRowPitch, SrcDepthPitch, 0, 0,
       pDstTexture->GetVkImageType(), extent, 1,
       formatInfo, formatInfo->aspectMask);
+
+    if (traceAlpha)
+      winehuaTraceRgbaAlpha("update-packed", stagingSlice.mapPtr(0),
+        extent.width, extent.height,
+        uint64_t(extent.width) * formatInfo->elementSize,
+        uint32_t(packedFormat), DstSubresource, subresource.arrayLayer);
 
     UpdateImage(pDstTexture, &subresource,
       offset, extent, std::move(stagingSlice));

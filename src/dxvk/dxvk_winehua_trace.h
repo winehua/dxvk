@@ -4,10 +4,76 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdint>
+#include <string>
 
 #include "../util/log/log.h"
 
 namespace dxvk {
+
+  inline bool winehuaAlphaTraceEnabled() {
+    static const bool enabled = [] {
+      const char* value = std::getenv("DXVK_WINEHUA_TRACE_ALPHA");
+      return value && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+  }
+
+  inline void winehuaTraceRgbaAlpha(
+    const char* stage,
+    const void* data,
+          uint32_t width,
+          uint32_t height,
+          uint64_t rowPitch,
+          uint32_t format,
+          uint32_t subresource,
+          uint32_t layer) {
+    if (!winehuaAlphaTraceEnabled() || !data
+     || width < 128 || height < 128 || rowPitch < uint64_t(width) * 4)
+      return;
+
+    static std::atomic<uint32_t> emitted { 0 };
+    const uint32_t index = emitted.fetch_add(1, std::memory_order_relaxed);
+    if (index >= 256) {
+      if (index == 256)
+        Logger::info("WineHuaAlpha: further records suppressed");
+      return;
+    }
+
+    uint64_t alphaZero = 0;
+    uint64_t alphaFull = 0;
+    uint64_t alphaOther = 0;
+    uint64_t hash = 1469598103934665603ull;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(data);
+
+    for (uint32_t y = 0; y < height; y++) {
+      const auto* row = bytes + uint64_t(y) * rowPitch;
+      for (uint32_t x = 0; x < width; x++) {
+        const auto* pixel = row + uint64_t(x) * 4;
+        for (uint32_t channel = 0; channel < 4; channel++) {
+          hash ^= pixel[channel];
+          hash *= 1099511628211ull;
+        }
+
+        if (pixel[3] == 0)
+          alphaZero++;
+        else if (pixel[3] == 255)
+          alphaFull++;
+        else
+          alphaOther++;
+      }
+    }
+
+    Logger::info(std::string("WineHuaAlpha: stage=") + stage
+      + " size=" + std::to_string(width) + "x" + std::to_string(height)
+      + " pitch=" + std::to_string(rowPitch)
+      + " format=" + std::to_string(format)
+      + " subresource=" + std::to_string(subresource)
+      + " layer=" + std::to_string(layer)
+      + " alpha0=" + std::to_string(alphaZero)
+      + " alpha255=" + std::to_string(alphaFull)
+      + " alphaOther=" + std::to_string(alphaOther)
+      + " hash=" + std::to_string(hash));
+  }
 
   enum class WineHuaDualSrcMode {
     TwoPass,
