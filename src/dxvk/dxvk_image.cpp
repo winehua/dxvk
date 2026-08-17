@@ -3,6 +3,7 @@
 #include "dxvk_cmdlist.h"
 #include "dxvk_device.h"
 #include "dxvk_winehua_trace.h"
+#include "../util/util_shared_res.h"
 
 namespace dxvk {
   
@@ -48,9 +49,13 @@ namespace dxvk {
     info.initialLayout         = createInfo.initialLayout;
 
     m_shared = canShareImage(info, createInfo.sharing);
+    // WineHua: Venus 不支持 external memory win32 时走进程内伪共享 (fake handle),
+    // 不向 vkCreateImage 附加 external 信息, 否则驱动会拒绝创建该 image。
+    const bool useExternalSharing = m_shared
+      && m_device->extensions().khrExternalMemoryWin32;
 
     VkExternalMemoryImageCreateInfo externalInfo;
-    if (m_shared) {
+    if (useExternalSharing) {
       externalInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
       externalInfo.pNext = nullptr;
       externalInfo.handleTypes = createInfo.sharing.type;
@@ -100,7 +105,7 @@ namespace dxvk {
     dedMemoryAllocInfo.image  = m_image.image;
 
     VkExportMemoryAllocateInfo exportInfo;
-    if (m_shared && createInfo.sharing.mode == DxvkSharedHandleMode::Export) {
+    if (useExternalSharing && createInfo.sharing.mode == DxvkSharedHandleMode::Export) {
       exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
       exportInfo.pNext = nullptr;
       exportInfo.handleTypes = createInfo.sharing.type;
@@ -110,7 +115,7 @@ namespace dxvk {
 
 #ifdef _WIN32
     VkImportMemoryWin32HandleInfoKHR importInfo;
-    if (m_shared && createInfo.sharing.mode == DxvkSharedHandleMode::Import) {
+    if (useExternalSharing && createInfo.sharing.mode == DxvkSharedHandleMode::Import) {
       importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR;
       importInfo.pNext = nullptr;
       importInfo.handleType = createInfo.sharing.type;
@@ -142,7 +147,7 @@ namespace dxvk {
     if (isGpuWritable)
       hints.set(DxvkMemoryFlag::GpuWritable);
 
-    if (m_shared) {
+    if (useExternalSharing) {
       dedicatedRequirements.prefersDedicatedAllocation  = VK_TRUE;
       dedicatedRequirements.requiresDedicatedAllocation = VK_TRUE;
     }
@@ -255,6 +260,11 @@ namespace dxvk {
       return false;
 
     if (!m_device->extensions().khrExternalMemoryWin32) {
+      // WineHua: Venus/Maleoon 不支持 VK_KHR_external_memory_win32。Unity 的
+      // WindowsVideoMedia 等需要 D3D11 共享纹理; 走进程内伪共享 (fake handle
+      // 编码同进程 DxvkImage 指针), 允许逻辑共享, 由 D3D11 层同进程复用 image。
+      if (winehuaFakeSharedEnabled())
+        return true;
       Logger::err("Failed to create shared resource: VK_KHR_EXTERNAL_MEMORY_WIN32 not supported");
       return false;
     }
@@ -314,6 +324,12 @@ namespace dxvk {
 
     if (!m_shared)
       return INVALID_HANDLE_VALUE;
+
+    if (winehuaFakeSharedEnabled() && !m_device->extensions().khrExternalMemoryWin32) {
+      // WineHua 伪共享: fake handle 编码同进程 image 指针, OpenSharedResource
+      // 解引用即可复用, 无需真实 win32 句柄。
+      return reinterpret_cast<HANDLE>(const_cast<DxvkImage*>(this));
+    }
 
 #ifdef _WIN32
     VkMemoryGetWin32HandleInfoKHR handleInfo;

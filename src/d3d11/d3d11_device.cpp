@@ -13,6 +13,7 @@
 #include "d3d11_context_imm.h"
 #include "d3d11_device.h"
 #include "d3d11_fence.h"
+#include "../util/util_shared_res.h"
 #include "d3d11_input_layout.h"
 #include "d3d11_interop.h"
 #include "d3d11_query.h"
@@ -2399,6 +2400,41 @@ namespace dxvk {
 
     if (ppResource == nullptr)
       return S_FALSE;
+
+    if (winehuaFakeSharedEnabled()
+     && !GetDXVKDevice()->extensions().khrExternalMemoryWin32) {
+      // WineHua 伪共享: fake handle 编码同进程 DxvkImage*, 元数据在进程内表。
+      // 跳过 openKmtHandle/getSharedMetadata (无内核 SharedGpuResource 设备)。
+      DxvkSharedTextureMetadata metadata;
+      if (!winehuaFakeSharedLoad(hResource, &metadata, sizeof(metadata), NULL)) {
+        Logger::warn(str::format("D3D11Device::OpenSharedResourceGeneric: fake shared handle not found: ", hResource));
+        return E_INVALIDARG;
+      }
+
+      D3D11_COMMON_TEXTURE_DESC d3d11Desc;
+      d3d11Desc.Width          = metadata.Width;
+      d3d11Desc.Height         = metadata.Height;
+      d3d11Desc.Depth          = 1;
+      d3d11Desc.MipLevels      = metadata.MipLevels;
+      d3d11Desc.ArraySize      = metadata.ArraySize;
+      d3d11Desc.Format         = metadata.Format;
+      d3d11Desc.SampleDesc     = metadata.SampleDesc;
+      d3d11Desc.Usage          = metadata.Usage;
+      d3d11Desc.BindFlags      = metadata.BindFlags;
+      d3d11Desc.CPUAccessFlags = metadata.CPUAccessFlags;
+      d3d11Desc.MiscFlags      = metadata.MiscFlags;
+      d3d11Desc.TextureLayout  = metadata.TextureLayout;
+
+      try {
+        const Com<D3D11Texture2D> texture = new D3D11Texture2D(this, &d3d11Desc, hResource);
+        texture->QueryInterface(ReturnedInterface, ppResource);
+        return S_OK;
+      }
+      catch (const DxvkError& e) {
+        Logger::err(e.message());
+        return E_INVALIDARG;
+      }
+    }
 
     HANDLE ntHandle = IsKmtHandle ? openKmtHandle(hResource) : hResource;
 

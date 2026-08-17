@@ -316,10 +316,23 @@ namespace dxvk {
     if (m_mapMode == D3D11_COMMON_TEXTURE_MAP_MODE_DIRECT)
       memoryProperties = GetMemoryFlags();
     
-    if (vkImage == VK_NULL_HANDLE)
-      m_image = m_device->GetDXVKDevice()->createImage(imageInfo, memoryProperties);
-    else
-      m_image = m_device->GetDXVKDevice()->createImageFromVkImage(imageInfo, vkImage);
+    if (winehuaFakeSharedEnabled()
+     && !m_device->GetDXVKDevice()->extensions().khrExternalMemoryWin32
+     && imageInfo.sharing.mode == DxvkSharedHandleMode::Import
+     && hSharedHandle != INVALID_HANDLE_VALUE) {
+      // WineHua 伪共享: fake handle 编码同进程 DxvkImage*, 直接复用 (Rc incRef),
+      // 避免在 Venus 上走 VK_KHR_external_memory_win32 的 Import 路径。
+      DxvkImage* sharedImage = reinterpret_cast<DxvkImage*>(hSharedHandle);
+      if (sharedImage != nullptr)
+        m_image = Rc<DxvkImage>(sharedImage);
+    }
+
+    if (m_image == nullptr) {
+      if (vkImage == VK_NULL_HANDLE)
+        m_image = m_device->GetDXVKDevice()->createImage(imageInfo, memoryProperties);
+      else
+        m_image = m_device->GetDXVKDevice()->createImageFromVkImage(imageInfo, vkImage);
+    }
 
     if (imageInfo.sharing.mode == DxvkSharedHandleMode::Export)
       ExportImageInfo();
@@ -769,13 +782,6 @@ namespace dxvk {
   
   
   void D3D11CommonTexture::ExportImageInfo() {
-    HANDLE hSharedHandle;
-
-    if (m_desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED)
-      hSharedHandle = openKmtHandle( m_image->sharedHandle() );
-    else
-      hSharedHandle = m_image->sharedHandle();
-
     DxvkSharedTextureMetadata metadata;
 
     metadata.Width          = m_desc.Width;
@@ -789,6 +795,24 @@ namespace dxvk {
     metadata.CPUAccessFlags = m_desc.CPUAccessFlags;
     metadata.MiscFlags      = m_desc.MiscFlags;
     metadata.TextureLayout  = m_desc.TextureLayout;
+
+    // WineHua 伪共享: 无内核 SharedGpuResource 设备, fake handle 直接编码
+    // DxvkImage 指针, 元数据存进程内表 (OpenSharedResource 读取)。
+    if (winehuaFakeSharedEnabled()
+     && !m_device->GetDXVKDevice()->extensions().khrExternalMemoryWin32) {
+      HANDLE fake = m_image->sharedHandle();
+      if (fake == INVALID_HANDLE_VALUE
+          || !winehuaFakeSharedStore(fake, &metadata, sizeof(metadata)))
+        Logger::warn("D3D11: Failed to write fake shared resource info for a texture");
+      return;
+    }
+
+    HANDLE hSharedHandle;
+
+    if (m_desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED)
+      hSharedHandle = openKmtHandle( m_image->sharedHandle() );
+    else
+      hSharedHandle = m_image->sharedHandle();
 
     if (hSharedHandle == INVALID_HANDLE_VALUE || !setSharedMetadata(hSharedHandle, &metadata, sizeof(metadata))) {
       Logger::warn("D3D11: Failed to write shared resource info for a texture");
