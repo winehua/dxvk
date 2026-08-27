@@ -1230,6 +1230,9 @@ namespace dxvk {
     std::vector<DxvkGraphicsPipeline*> m_pipelines;
 
     std::vector<WineHuaMappedFlush> m_winehuaMappedFlushes;
+    bool                            m_winehuaMappedFlushStatsEnabled = false;
+    uint64_t                        m_winehuaMappedFlushQueuedRanges = 0;
+    uint64_t                        m_winehuaMappedFlushQueuedBytes = 0;
 
     force_inline VkCommandBuffer getCmdBuffer() const {
       // Allocation logic will always provide an execution buffer
