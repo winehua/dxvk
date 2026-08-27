@@ -1,4 +1,5 @@
 #include "dxvk_cmdlist.h"
+#include "dxvk_winehua_mapped_range.h"
 #include "dxvk_device.h"
 
 #include "../util/util_winehua_api_trace.h"
@@ -11,7 +12,6 @@
 
 namespace dxvk {
 
-  static std::atomic<bool> g_winehuaMappedFlushBatchLogged = { false };
   static std::atomic<uint64_t> g_winehuaMappedFlushLists = { 0 };
   static std::atomic<uint64_t> g_winehuaMappedFlushQueuedRanges = { 0 };
   static std::atomic<uint64_t> g_winehuaMappedFlushEmittedRanges = { 0 };
@@ -240,7 +240,8 @@ namespace dxvk {
   DxvkCommandList::DxvkCommandList(DxvkDevice* device)
   : m_device        (device),
     m_vkd           (device->vkd()),
-    m_vki           (device->vki()) {
+    m_vki           (device->vki()),
+    m_winehuaMappedFlushStatsEnabled(winehuaBatchMappedFlushStatsEnabled()) {
     const auto& graphicsQueue = m_device->queues().graphics;
     const auto& transferQueue = m_device->queues().transfer;
 
@@ -398,8 +399,35 @@ namespace dxvk {
   VkResult DxvkCommandList::queueWineHuaMappedFlush(
     const Rc<DxvkResourceAllocation>& storage,
     const VkMappedMemoryRange&        range) {
-    if (!g_winehuaMappedFlushBatchLogged.exchange(true))
-      Logger::info("WineHua: modern command-list-owned mapped flush batching enabled");
+    if (!range.size)
+      return VK_SUCCESS;
+
+    if (m_winehuaMappedFlushStatsEnabled) {
+      m_winehuaMappedFlushQueuedRanges += 1;
+      if (range.size != VK_WHOLE_SIZE) {
+        const uint64_t queuedBytes = static_cast<uint64_t>(range.size);
+        m_winehuaMappedFlushQueuedBytes = queuedBytes >
+            std::numeric_limits<uint64_t>::max() - m_winehuaMappedFlushQueuedBytes
+          ? std::numeric_limits<uint64_t>::max()
+          : m_winehuaMappedFlushQueuedBytes + queuedBytes;
+      }
+    }
+
+    /* Most dynamic-buffer updates arrive in allocation order. Coalesce the
+     * common adjacent/overlapping case before growing and sorting the command
+     * list vector. Keep the allocation identity check: equal Vulkan memory
+     * handles alone are not a sufficient lifetime key if a handle is reused. */
+    if (!m_winehuaMappedFlushes.empty()) {
+      WineHuaMappedFlush& previous = m_winehuaMappedFlushes.back();
+
+      if (previous.storage.ptr() == storage.ptr()
+       && previous.range.memory == range.memory) {
+        if (winehuaMergeMappedRange(
+              previous.range.offset, previous.range.size,
+              range.offset, range.size))
+          return VK_SUCCESS;
+      }
+    }
 
     WineHuaMappedFlush pending;
     pending.storage = storage;
@@ -414,11 +442,11 @@ namespace dxvk {
     if (m_winehuaMappedFlushes.empty())
       return VK_SUCCESS;
 
-    const bool collectStats = winehuaBatchMappedFlushStatsEnabled();
-    const uint64_t queuedRangeCount = m_winehuaMappedFlushes.size();
+    const bool collectStats = m_winehuaMappedFlushStatsEnabled;
+    const uint64_t queuedRangeCount = m_winehuaMappedFlushQueuedRanges;
     uint64_t emittedRangeCount = 0;
     uint64_t flushCallCount = 0;
-    uint64_t queuedBytes = 0;
+    const uint64_t queuedBytes = m_winehuaMappedFlushQueuedBytes;
     uint64_t emittedBytes = 0;
     uint64_t wholeRangeCount = 0;
 
@@ -435,13 +463,6 @@ namespace dxvk {
           return false;
         return a.range.offset < b.range.offset;
       });
-
-    const auto rangeEnd = [] (const VkMappedMemoryRange& range) {
-      if (range.size == VK_WHOLE_SIZE
-       || range.size > std::numeric_limits<VkDeviceSize>::max() - range.offset)
-        return std::numeric_limits<VkDeviceSize>::max();
-      return range.offset + range.size;
-    };
 
     constexpr uint32_t MaxRangesPerCall = 256;
     std::array<VkMappedMemoryRange, MaxRangesPerCall> ranges;
@@ -473,21 +494,13 @@ namespace dxvk {
       if (!range.size)
         continue;
 
-      if (collectStats && range.size != VK_WHOLE_SIZE)
-        queuedBytes += range.size;
-
       if (rangeCount) {
         auto& previous = ranges[rangeCount - 1];
         const bool sameMemory = !memoryLess(previous.memory, range.memory)
                              && !memoryLess(range.memory, previous.memory);
-        const VkDeviceSize previousEnd = rangeEnd(previous);
-        if (sameMemory && range.offset <= previousEnd) {
-          const VkDeviceSize mergedEnd = std::max(previousEnd, rangeEnd(range));
-          previous.size = mergedEnd == std::numeric_limits<VkDeviceSize>::max()
-            ? VK_WHOLE_SIZE
-            : mergedEnd - previous.offset;
+        if (sameMemory && winehuaMergeMappedRange(
+              previous.offset, previous.size, range.offset, range.size))
           continue;
-        }
       }
 
       if (rangeCount == MaxRangesPerCall) {
@@ -619,6 +632,8 @@ namespace dxvk {
     m_pipelines.clear();
 
     m_winehuaMappedFlushes.clear();
+    m_winehuaMappedFlushQueuedRanges = 0;
+    m_winehuaMappedFlushQueuedBytes = 0;
 
     m_waitSemaphores.clear();
     m_signalSemaphores.clear();

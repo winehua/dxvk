@@ -39,10 +39,16 @@ namespace dxvk {
     }
   }
 
+#ifndef DXVK_WINEHUA_ENABLE_API_TRACE
+#define DXVK_WINEHUA_ENABLE_API_TRACE 0
+#endif
+
+#if DXVK_WINEHUA_ENABLE_API_TRACE
   inline bool winehuaApiTraceEnabled() {
     static const bool enabled = env::getEnvVar("DXVK_WINEHUA_TRACE_API") == "1";
     return enabled;
   }
+#endif
 
 
   inline bool winehuaMappedTraceEnabled() {
@@ -132,6 +138,7 @@ namespace dxvk {
   }
 
 
+#if DXVK_WINEHUA_ENABLE_API_TRACE
   class WineHuaApiTraceScope {
   public:
 
@@ -158,9 +165,14 @@ namespace dxvk {
     uint64_t    m_sequence = 0;
     bool        m_sample = false;
   };
+#endif
 
 }
 
+#if DXVK_WINEHUA_ENABLE_API_TRACE
 #define WINEHUA_API_TRACE() \
   static std::atomic<uint64_t> winehuaApiTraceCounter { 0 }; \
   dxvk::WineHuaApiTraceScope winehuaApiTraceScope(__func__, winehuaApiTraceCounter)
+#else
+#define WINEHUA_API_TRACE() do { } while (0)
+#endif
