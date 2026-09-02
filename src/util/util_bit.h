@@ -1,6 +1,17 @@
 #pragma once
 
-#ifndef _MSC_VER
+/* WineHua ARM64X port: guard x86-only intrinsics & asm with DXVK_ARCH_X86
+ * (arm64ec target 同时定义 __x86_64__ + __arm64ec__, 需先排除) */
+#if (defined(__x86_64__) && !defined(__arm64ec__)) || (defined(_M_X64) && !defined(_M_ARM64EC)) \
+    || defined(__i386__) || defined(_M_IX86) || defined(__e2k__)
+  #define DXVK_ARCH_X86 1
+#elif defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC)
+  #define DXVK_ARCH_ARM64 1
+#else
+  #error "Unknown CPU Architecture"
+#endif
+
+#if !defined(DXVK_ARCH_ARM64) && !defined(_MSC_VER)
 #if defined(__WINE__) && defined(__clang__)
 #pragma push_macro("_WIN32")
 #undef _WIN32
@@ -9,7 +20,7 @@
 #if defined(__WINE__) && defined(__clang__)
 #pragma pop_macro("_WIN32")
 #endif
-#else
+#elif defined(_MSC_VER)
 #include <intrin.h>
 #endif
 
@@ -57,15 +68,8 @@ namespace dxvk::bit {
     #elif defined(__BMI__)
     return __tzcnt_u32(n);
     #elif defined(__GNUC__) || defined(__clang__)
-    uint32_t res;
-    uint32_t tmp;
-    asm (
-      "mov  $32, %1;"
-      "bsf   %2, %0;"
-      "cmovz %1, %0;"
-      : "=&r" (res), "=&r" (tmp)
-      : "r" (n));
-    return res;
+    /* bsf/cmovz asm is x86-only; builtin ctz matches tzcnt for n != 0 */
+    return n != 0 ? __builtin_ctz(n) : 32;
     #else
     uint32_t r = 31;
     n &= -n;
@@ -145,7 +149,7 @@ namespace dxvk::bit {
   template<typename T>
   bool bcmpeq(const T* a, const T* b) {
     static_assert(alignof(T) >= 16);
-    #if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
+    #if defined(DXVK_ARCH_X86) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
     auto ai = reinterpret_cast<const __m128i*>(a);
     auto bi = reinterpret_cast<const __m128i*>(b);
 
